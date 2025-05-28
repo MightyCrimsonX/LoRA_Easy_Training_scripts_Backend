@@ -164,7 +164,7 @@ def main():
 
     os.chdir("sd_scripts")
     print("creating venv and installing requirements")
-    subprocess.check_call("uv venv venv", shell=PLATFORM == "linux")
+    subprocess.check_call("uv venv venv --python 3.10", shell=PLATFORM == "linux")
 
     if len(sys.argv) > 1 and sys.argv[1] == "colab":
         setup_colab()
