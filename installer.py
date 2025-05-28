@@ -90,9 +90,9 @@ def setup_venv():
         "uv pip install --python /content/trainer/sd_scripts/venv/bin/python xformers==0.0.29.post1 -f https://download.pytorch.org/whl/cu124 --no-progress",
         shell=PLATFORM == "linux",
     )
-    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -U -r requirements.txt --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -U ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -U -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -r requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
 
 
 # colab only
@@ -164,7 +164,7 @@ def main():
 
     os.chdir("sd_scripts")
     print("creating venv and installing requirements")
-    subprocess.check_call("uv venv venv --python 3.10", shell=PLATFORM == "linux")
+    subprocess.check_call("uv venv venv --python 3.10.16", shell=PLATFORM == "linux")
 
     if len(sys.argv) > 1 and sys.argv[1] == "colab":
         setup_colab()
