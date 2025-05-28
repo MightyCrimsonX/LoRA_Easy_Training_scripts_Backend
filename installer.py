@@ -90,9 +90,9 @@ def setup_venv():
         "uv pip install xformers==0.0.29.post1 -f https://download.pytorch.org/whl/cu124 --no-progress",
         shell=PLATFORM == "linux",
     )
-    subprocess.check_call("uv pip install -U -r requirements.txt", shell=PLATFORM == "linux")
-    subprocess.check_call("uv pip install -U ../custom_scheduler/.", shell=PLATFORM == "linux")
-    subprocess.check_call("uv pip install -U -r ../requirements.txt", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install -U -r requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install -U ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install -U -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
 
 
 # colab only
