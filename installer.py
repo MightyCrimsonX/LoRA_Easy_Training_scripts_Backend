@@ -78,26 +78,26 @@ def setup_accelerate(platform: str) -> None:
     shutil.move("default_config.yaml", str(path.resolve()))
 
 
-def setup_venv():
+def setup_venv(venv_uv):
     subprocess.check_call(
-        "uv pip install --python /content/trainer/sd_scripts/venv/bin/python torch==2.5.1 torchvision==0.20.1 -f https://download.pytorch.org/whl/cu124 --no-progress",
+        f"uv pip install --python {venv_uv} torch==2.5.1 torchvision==0.20.1 -f https://download.pytorch.org/whl/cu124 --no-progress",
         shell=PLATFORM == "linux",
     )
     if PLATFORM == "windows":
         subprocess.check_call("venv\\Scripts\\python.exe ..\\fix_torch.py")
 
     subprocess.check_call(
-        "uv pip install --python /content/trainer/sd_scripts/venv/bin/python xformers==0.0.29.post1 -f https://download.pytorch.org/whl/cu124 --no-progress",
+        f"uv pip install --python {venv_uv} xformers==0.0.29.post1 -f https://download.pytorch.org/whl/cu124 --no-progress",
         shell=PLATFORM == "linux",
     )
-    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -r requirements.txt --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call(f"uv pip install --python {venv_uv} -r requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call(f"uv pip install --python {venv_uv} ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call(f"uv pip install --python {venv_uv} -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
 
 
 # colab only
-def setup_colab():
-    setup_venv()
+def setup_colab(venv_uv):
+    setup_venv(venv_uv)
     setup_accelerate("linux")
 
 
@@ -163,11 +163,13 @@ def main():
     )
 
     os.chdir("sd_scripts")
+    if PLATFORM == "linux":
+        uv = Path("venv/bin/python")
     print("creating venv and installing requirements")
     subprocess.check_call("uv venv venv --python 3.10.16", shell=PLATFORM == "linux")
 
     if len(sys.argv) > 1 and sys.argv[1] == "colab":
-        setup_colab()
+        setup_colab(uv)
         print("completed installing")
         quit()
 
