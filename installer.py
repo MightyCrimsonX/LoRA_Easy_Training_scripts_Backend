@@ -93,6 +93,7 @@ def setup_venv():
     subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -r requirements.txt --no-progress", shell=PLATFORM == "linux")
     subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
     subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call("uv pip install --python /content/trainer/sd_scripts/venv/bin/python ../lycoris/.", shell=PLATFORM == "linux")
 
 
 # colab only
