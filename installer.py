@@ -93,6 +93,8 @@ def setup_venv(venv_uv):
     subprocess.check_call(f"uv pip install --python {venv_uv} -r requirements.txt --no-progress", shell=PLATFORM == "linux")
     subprocess.check_call(f"uv pip install --python {venv_uv} ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
     subprocess.check_call(f"uv pip install --python {venv_uv} -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call(f"uv pip install --python {venv_uv} ../lycoris/. --no-progress", shell=PLATFORM == "linux")
+    subprocess.check_call(f"uv pip install --python {venv_uv} prodigyopt==1.0 --force-reinstall --no-deps --no-progress", shell=PLATFORM == "linux")
     subprocess.check_call(f"uv pip install aria2 --no-progress", shell=PLATFORM == "linux")
     subprocess.check_call(f"uv pip uninstall --python {venv_uv} -- y rich", shell=PLATFORM == "linux")
 
