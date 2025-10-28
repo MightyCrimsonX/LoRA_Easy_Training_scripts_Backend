@@ -72,6 +72,18 @@ SCHEDULER_CHOICES = {
     "rex",
 }
 
+BASE_MODEL_CHOICES: Dict[str, str] = {
+    "Pony Diffusion V6 XL": "PonyDiffusion/Pony-Diffusion-V6-XL",
+    "Animagine XL V3": "cagliostrolab/animagine-xl-3.0",
+    "animagine_4.0_zero": "cagliostrolab/animagine-xl-4.0-zero",
+    "Illustrious_0.1": "stabilityai/illustrious-xl-0.1",
+    "Illustrious_2.0": "stabilityai/illustrious-xl-2.0",
+    "NoobAI-XL0.75": "NoobAI/NoobAI-XL0.75",
+    "Stable Diffusion XL 1.0 base": "stabilityai/stable-diffusion-xl-base-1.0",
+    "NoobAIXL0_75vpred": "NoobAI/NoobAIXL0.75-vPred",
+    "RouWei_v080vpred": "RouWei/RouWei-v0.80-vPred",
+}
+
 RECOMMENDED_OPTIMIZER_SETTINGS: Dict[str, Dict[str, object]] = {
     "adafactor": {
         "optimizer_kwargs": {
@@ -117,6 +129,7 @@ class TrainingConfig:
     mixed_precision: str = "fp16"
     seed: Optional[int] = None
     pretrained_model_name_or_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    base_model: Optional[str] = None
     vae_model_name_or_path: Optional[str] = None
     optimizer_type: str = "adamw"
     weight_decay: float = 1e-2
@@ -178,7 +191,21 @@ class TrainingConfig:
             shuffle_tags=self.shuffle_tags,
             activation_tags=tuple(self.activation_tags),
             use_optimizer_recommended_args=self.use_optimizer_recommended_args,
+            base_model=self.base_model,
         )
+
+    def resolved_pretrained_model(self) -> str:
+        base_model_key = (self.base_model or "").strip()
+        if base_model_key:
+            try:
+                return BASE_MODEL_CHOICES[base_model_key]
+            except KeyError as exc:  # pragma: no cover - guard against inconsistent config
+                raise ValueError(f"Modelo base desconocido: {base_model_key}") from exc
+
+        candidate = (self.pretrained_model_name_or_path or "").strip()
+        if candidate in BASE_MODEL_CHOICES:
+            return BASE_MODEL_CHOICES[candidate]
+        return candidate
 
 
 class FolderCaptionDataset(Dataset):
@@ -658,8 +685,14 @@ def train(config: TrainingConfig) -> None:
         model_dtype = torch.float32
         variant = None
 
+    resolved_model_name = config.resolved_pretrained_model()
+    LOGGER.info(
+        "Modelo base seleccionado: %s",
+        f"{config.base_model} -> {resolved_model_name}" if config.base_model else resolved_model_name,
+    )
+
     pipe = StableDiffusionXLPipeline.from_pretrained(
-        config.pretrained_model_name_or_path,
+        resolved_model_name,
         torch_dtype=model_dtype,
         variant=variant,
     )
@@ -843,6 +876,15 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--mixed-precision", choices=["no", "fp16", "bf16"], default="fp16")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--pretrained-model", type=str, default="stabilityai/stable-diffusion-xl-base-1.0")
+    parser.add_argument(
+        "--base-model",
+        type=str,
+        default=None,
+        choices=sorted(BASE_MODEL_CHOICES),
+        help=(
+            "Nombre del modelo base predefinido a usar. Si se especifica, tiene prioridad sobre --pretrained-model."
+        ),
+    )
     parser.add_argument("--vae", type=str, default=None)
     parser.add_argument("--optimizer", type=str.lower, choices=sorted(OPTIMIZER_CHOICES), default="adamw")
     parser.add_argument("--weight-decay", type=float, default=1e-2)
@@ -893,6 +935,7 @@ def parse_args() -> TrainingConfig:
         mixed_precision=args.mixed_precision,
         seed=args.seed,
         pretrained_model_name_or_path=args.pretrained_model,
+        base_model=args.base_model,
         vae_model_name_or_path=args.vae,
         optimizer_type=args.optimizer,
         weight_decay=args.weight_decay,
