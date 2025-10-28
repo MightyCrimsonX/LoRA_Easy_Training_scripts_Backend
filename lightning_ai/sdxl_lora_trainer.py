@@ -7,6 +7,7 @@ import math
 import os
 import random
 import re
+import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -25,7 +26,29 @@ from diffusers.optimization import (
     get_polynomial_decay_schedule_with_warmup,
 )
 from diffusers.utils.import_utils import is_xformers_available
-from diffusers.utils.peft_utils import convert_peft_state_dict_to_diffusers, get_peft_model_state_dict
+try:
+    from diffusers.utils.peft_utils import convert_peft_state_dict_to_diffusers, get_peft_model_state_dict
+except ImportError:  # pragma: no cover - older diffusers versions
+    from diffusers.utils.peft_utils import get_peft_model_state_dict
+
+    try:
+        from diffusers.loaders.peft import (
+            convert_peft_state_dict_to_diffusers as _convert_peft_state_dict_to_diffusers,
+        )
+    except Exception:  # pragma: no cover - very old diffusers versions
+
+        def convert_peft_state_dict_to_diffusers(state_dict: Dict[str, torch.Tensor], *args, **kwargs):
+            warnings.warn(
+                "diffusers no dispone de `convert_peft_state_dict_to_diffusers`; se devolverá el estado sin convertir. "
+                "Actualiza diffusers para obtener compatibilidad total.",
+                ImportWarning,
+            )
+            return state_dict
+
+    else:
+
+        def convert_peft_state_dict_to_diffusers(state_dict: Dict[str, torch.Tensor], *args, **kwargs):
+            return _convert_peft_state_dict_to_diffusers(state_dict, *args, **kwargs)
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
