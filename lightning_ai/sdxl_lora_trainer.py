@@ -72,6 +72,33 @@ SCHEDULER_CHOICES = {
     "rex",
 }
 
+RECOMMENDED_OPTIMIZER_SETTINGS: Dict[str, Dict[str, object]] = {
+    "adafactor": {
+        "optimizer_kwargs": {
+            "scale_parameter": False,
+            "relative_step": False,
+            "warmup_init": False,
+        }
+    },
+    "adamw8bit": {
+        "weight_decay": 0.1,
+        "betas": (0.9, 0.99),
+    },
+    "prodigy": {
+        "weight_decay": 0.01,
+        "betas": (0.9, 0.99),
+        "optimizer_kwargs": {
+            "decouple": True,
+            "use_bias_correction": False,
+            "safeguard_warmup": True,
+            "full_precision": True,
+        },
+    },
+    "came": {
+        "weight_decay": 0.04,
+    },
+}
+
 
 @dataclass
 class TrainingConfig:
@@ -109,6 +136,7 @@ class TrainingConfig:
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
     shuffle_tags: bool = False
     activation_tags: Sequence[str] = field(default_factory=tuple)
+    use_optimizer_recommended_args: bool = False
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
@@ -149,6 +177,7 @@ class TrainingConfig:
             scheduler_kwargs=dict(self.scheduler_kwargs or {}),
             shuffle_tags=self.shuffle_tags,
             activation_tags=tuple(self.activation_tags),
+            use_optimizer_recommended_args=self.use_optimizer_recommended_args,
         )
 
 
@@ -250,6 +279,44 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
         raise ValueError(f"Optimizer '{config.optimizer_type}' no es compatible.")
 
     betas = (config.optimizer_beta1, config.optimizer_beta2)
+    weight_decay = config.weight_decay
+    eps = config.optimizer_eps
+    momentum = config.optimizer_momentum
+    optimizer_kwargs = dict(config.optimizer_kwargs or {})
+
+    if config.use_optimizer_recommended_args:
+        recommended = RECOMMENDED_OPTIMIZER_SETTINGS.get(name)
+        if recommended:
+            weight_decay = recommended.get("weight_decay", weight_decay)  # type: ignore[assignment]
+            betas = recommended.get("betas", betas)  # type: ignore[assignment]
+            eps = recommended.get("eps", eps)  # type: ignore[assignment]
+            momentum = recommended.get("momentum", momentum)  # type: ignore[assignment]
+            rec_kwargs = dict(recommended.get("optimizer_kwargs", {}))
+            rec_kwargs.update(optimizer_kwargs)
+            optimizer_kwargs = rec_kwargs
+            LOGGER.info(
+                "Usando argumentos recomendados para %s: %s",
+                name,
+                json.dumps(
+                    {
+                        k: v
+                        for k, v in {
+                            "weight_decay": weight_decay,
+                            "betas": list(betas) if isinstance(betas, tuple) else betas,
+                            "eps": eps,
+                            "momentum": momentum,
+                            "extras": optimizer_kwargs,
+                        }.items()
+                        if v not in ({}, None)
+                    },
+                    default=str,
+                ),
+            )
+        else:
+            LOGGER.warning(
+                "No hay argumentos recomendados registrados para el optimizador %s. Ignorando la bandera.",
+                name,
+            )
     if name in {"lion", "dadaptlion"} and config.optimizer_beta2 == 0.999:
         betas = (config.optimizer_beta1, 0.99)
 
@@ -257,9 +324,9 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
         return torch.optim.AdamW(
             optimizer_groups,
             betas=betas,
-            weight_decay=config.weight_decay,
-            eps=config.optimizer_eps,
-            **(config.optimizer_kwargs or {}),
+            weight_decay=weight_decay,
+            eps=eps,
+            **optimizer_kwargs,
         )
 
     if name == "adamw8bit":
@@ -274,9 +341,9 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
         return bnb.optim.AdamW8bit(
             optimizer_groups,
             betas=betas,
-            weight_decay=config.weight_decay,
-            eps=config.optimizer_eps,
-            **(config.optimizer_kwargs or {}),
+            weight_decay=weight_decay,
+            eps=eps,
+            **optimizer_kwargs,
         )
 
     if name == "prodigy":
@@ -290,20 +357,20 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
 
         prodigy_kwargs = {
             "betas": betas,
-            "eps": config.optimizer_eps,
-            "weight_decay": config.weight_decay,
+            "eps": eps,
+            "weight_decay": weight_decay,
         }
-        prodigy_kwargs.update(config.optimizer_kwargs or {})
+        prodigy_kwargs.update(optimizer_kwargs)
         return Prodigy(optimizer_groups, **prodigy_kwargs)
 
     if name == "dadaptation":
         from dadaptation import DAdaptAdaGrad
 
         ada_kwargs = {
-            "eps": config.optimizer_eps,
-            "weight_decay": config.weight_decay,
+            "eps": eps,
+            "weight_decay": weight_decay,
         }
-        ada_kwargs.update(config.optimizer_kwargs or {})
+        ada_kwargs.update(optimizer_kwargs)
         return DAdaptAdaGrad(optimizer_groups, **ada_kwargs)
 
     if name == "dadaptadam":
@@ -311,11 +378,11 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
 
         dadam_kwargs = {
             "betas": betas,
-            "eps": config.optimizer_eps,
-            "weight_decay": config.weight_decay,
+            "eps": eps,
+            "weight_decay": weight_decay,
             "decouple": True,
         }
-        dadam_kwargs.update(config.optimizer_kwargs or {})
+        dadam_kwargs.update(optimizer_kwargs)
         return DAdaptAdam(optimizer_groups, **dadam_kwargs)
 
     if name == "dadaptlion":
@@ -323,9 +390,9 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
 
         dlion_kwargs = {
             "betas": betas,
-            "weight_decay": config.weight_decay,
+            "weight_decay": weight_decay,
         }
-        dlion_kwargs.update(config.optimizer_kwargs or {})
+        dlion_kwargs.update(optimizer_kwargs)
         return DAdaptLion(optimizer_groups, **dlion_kwargs)
 
     if name == "lion":
@@ -339,19 +406,19 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
 
         lion_kwargs = {
             "betas": betas,
-            "weight_decay": config.weight_decay,
+            "weight_decay": weight_decay,
         }
-        lion_kwargs.update(config.optimizer_kwargs or {})
+        lion_kwargs.update(optimizer_kwargs)
         return Lion(optimizer_groups, **lion_kwargs)
 
     if name == "sgdnesterov":
-        sgd_kwargs = dict(config.optimizer_kwargs or {})
-        momentum = sgd_kwargs.pop("momentum", config.optimizer_momentum)
+        sgd_kwargs = dict(optimizer_kwargs)
+        momentum = sgd_kwargs.pop("momentum", momentum)
         return torch.optim.SGD(
             optimizer_groups,
             momentum=momentum,
             nesterov=True,
-            weight_decay=config.weight_decay,
+            weight_decay=weight_decay,
             **sgd_kwargs,
         )
 
@@ -364,13 +431,13 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
                 "Instálalo con `uv pip install bitsandbytes`."
             ) from exc
 
-        sgd8_kwargs = dict(config.optimizer_kwargs or {})
-        momentum = sgd8_kwargs.pop("momentum", config.optimizer_momentum)
+        sgd8_kwargs = dict(optimizer_kwargs)
+        momentum = sgd8_kwargs.pop("momentum", momentum)
         return bnb.optim.SGD8bit(
             optimizer_groups,
             momentum=momentum,
             nesterov=True,
-            weight_decay=config.weight_decay,
+            weight_decay=weight_decay,
             **sgd8_kwargs,
         )
 
@@ -385,12 +452,9 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
 
         adafactor_kwargs: Dict[str, Any] = {
             "lr": config.unet_lr,
-            "scale_parameter": False,
-            "relative_step": False,
-            "warmup_init": False,
-            "weight_decay": config.weight_decay,
+            "weight_decay": weight_decay,
         }
-        adafactor_kwargs.update(config.optimizer_kwargs or {})
+        adafactor_kwargs.update(optimizer_kwargs)
         return Adafactor(optimizer_groups, **adafactor_kwargs)
 
     if name == "came":
@@ -401,8 +465,8 @@ def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, ob
                 "El optimizador CAME requiere las utilidades personalizadas incluidas en este repositorio."
             ) from exc
 
-        came_kwargs = {"weight_decay": config.weight_decay, "weight_decouple": True}
-        came_kwargs.update(config.optimizer_kwargs or {})
+        came_kwargs = {"weight_decay": weight_decay, "weight_decouple": True}
+        came_kwargs.update(optimizer_kwargs)
         return CAME(optimizer_groups, **came_kwargs)
 
     raise AssertionError("Ruta de optimizador no cubierta")
@@ -786,6 +850,11 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--optimizer-beta2", type=float, default=0.999)
     parser.add_argument("--optimizer-eps", type=float, default=1e-8)
     parser.add_argument("--optimizer-momentum", type=float, default=0.9)
+    parser.add_argument(
+        "--use-optimizer-recommended-args",
+        action="store_true",
+        help="Aplica automáticamente los valores recomendados para el optimizador seleccionado.",
+    )
     parser.add_argument("--lr-scheduler", type=str.lower, choices=sorted(SCHEDULER_CHOICES), default="cosine")
     parser.add_argument("--lr-warmup-steps", type=int, default=None)
     parser.add_argument("--scheduler-first-cycle-steps", type=int, default=None)
@@ -831,6 +900,7 @@ def parse_args() -> TrainingConfig:
         optimizer_beta2=args.optimizer_beta2,
         optimizer_eps=args.optimizer_eps,
         optimizer_momentum=args.optimizer_momentum,
+        use_optimizer_recommended_args=args.use_optimizer_recommended_args,
         scheduler_type=args.lr_scheduler,
         lr_warmup_steps=args.lr_warmup_steps,
         scheduler_first_cycle_steps=args.scheduler_first_cycle_steps,
