@@ -5,9 +5,9 @@ import argparse
 import json
 import math
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -21,7 +21,13 @@ from diffusers.models.attention_processor import (
     LoRAAttnAddedKVProcessor2_0,
     LoRAAttnProcessor2_0,
 )
-from diffusers.optimization import get_cosine_schedule_with_warmup
+from diffusers.optimization import (
+    get_constant_schedule,
+    get_constant_schedule_with_warmup,
+    get_cosine_schedule_with_warmup,
+    get_linear_schedule_with_warmup,
+    get_polynomial_decay_schedule_with_warmup,
+)
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.peft_utils import convert_peft_state_dict_to_diffusers, get_peft_model_state_dict
 from PIL import Image
@@ -39,6 +45,30 @@ except Exception as exc:  # pragma: no cover
 
 LIGHTNING_ROOT = Path("/teamspace/studios/this_studio").resolve()
 LOGGER = get_logger(__name__)
+
+OPTIMIZER_CHOICES = {
+    "adamw",
+    "adamw8bit",
+    "prodigy",
+    "dadaptation",
+    "dadaptadam",
+    "dadaptlion",
+    "lion",
+    "sgdnesterov",
+    "sgdnesterov8bit",
+    "adafactor",
+    "came",
+}
+
+SCHEDULER_CHOICES = {
+    "constant",
+    "cosine",
+    "cosine_with_restarts",
+    "constant_with_warmup",
+    "linear",
+    "polynomial",
+    "rex",
+}
 
 
 @dataclass
@@ -60,6 +90,22 @@ class TrainingConfig:
     seed: Optional[int] = None
     pretrained_model_name_or_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
     vae_model_name_or_path: Optional[str] = None
+    optimizer_type: str = "adamw"
+    weight_decay: float = 1e-2
+    optimizer_beta1: float = 0.9
+    optimizer_beta2: float = 0.999
+    optimizer_eps: float = 1e-8
+    optimizer_momentum: float = 0.9
+    scheduler_type: str = "cosine"
+    lr_warmup_steps: Optional[int] = None
+    scheduler_first_cycle_steps: Optional[int] = None
+    scheduler_cycle_multiplier: float = 1.0
+    scheduler_gamma: float = 1.0
+    scheduler_min_lr: float = 1e-6
+    scheduler_d: float = 0.9
+    scheduler_power: float = 1.0
+    optimizer_kwargs: Dict[str, Any] = field(default_factory=dict)
+    scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
@@ -83,6 +129,22 @@ class TrainingConfig:
             seed=self.seed,
             pretrained_model_name_or_path=self.pretrained_model_name_or_path,
             vae_model_name_or_path=self.vae_model_name_or_path,
+            optimizer_type=self.optimizer_type,
+            weight_decay=self.weight_decay,
+            optimizer_beta1=self.optimizer_beta1,
+            optimizer_beta2=self.optimizer_beta2,
+            optimizer_eps=self.optimizer_eps,
+            optimizer_momentum=self.optimizer_momentum,
+            scheduler_type=self.scheduler_type,
+            lr_warmup_steps=self.lr_warmup_steps,
+            scheduler_first_cycle_steps=self.scheduler_first_cycle_steps,
+            scheduler_cycle_multiplier=self.scheduler_cycle_multiplier,
+            scheduler_gamma=self.scheduler_gamma,
+            scheduler_min_lr=self.scheduler_min_lr,
+            scheduler_d=self.scheduler_d,
+            scheduler_power=self.scheduler_power,
+            optimizer_kwargs=dict(self.optimizer_kwargs or {}),
+            scheduler_kwargs=dict(self.scheduler_kwargs or {}),
         )
 
 
@@ -126,6 +188,257 @@ def collate_examples(examples: Iterable[Dict[str, object]]) -> Dict[str, object]
 
 def calculate_total_steps(num_images: int, num_repeats: int, num_epochs: int, batch_size: int) -> int:
     return math.ceil((num_images * num_repeats * num_epochs) / batch_size)
+
+
+def create_optimizer(config: TrainingConfig, optimizer_groups: List[Dict[str, object]]) -> torch.optim.Optimizer:
+    name = config.optimizer_type.lower()
+    if name not in OPTIMIZER_CHOICES:
+        raise ValueError(f"Optimizer '{config.optimizer_type}' no es compatible.")
+
+    betas = (config.optimizer_beta1, config.optimizer_beta2)
+    if name in {"lion", "dadaptlion"} and config.optimizer_beta2 == 0.999:
+        betas = (config.optimizer_beta1, 0.99)
+
+    if name == "adamw":
+        return torch.optim.AdamW(
+            optimizer_groups,
+            betas=betas,
+            weight_decay=config.weight_decay,
+            eps=config.optimizer_eps,
+            **(config.optimizer_kwargs or {}),
+        )
+
+    if name == "adamw8bit":
+        try:
+            import bitsandbytes as bnb  # type: ignore
+        except ImportError as exc:  # pragma: no cover - dependencia opcional
+            raise RuntimeError(
+                "El optimizador AdamW8bit requiere el paquete `bitsandbytes`. "
+                "Instálalo con `uv pip install bitsandbytes`."
+            ) from exc
+
+        return bnb.optim.AdamW8bit(
+            optimizer_groups,
+            betas=betas,
+            weight_decay=config.weight_decay,
+            eps=config.optimizer_eps,
+            **(config.optimizer_kwargs or {}),
+        )
+
+    if name == "prodigy":
+        try:
+            from prodigyopt import Prodigy  # type: ignore
+        except ImportError as exc:  # pragma: no cover - dependencia opcional
+            raise RuntimeError(
+                "El optimizador Prodigy requiere el paquete `prodigyopt`. "
+                "Instálalo con `uv pip install prodigyopt`."
+            ) from exc
+
+        prodigy_kwargs = {
+            "betas": betas,
+            "eps": config.optimizer_eps,
+            "weight_decay": config.weight_decay,
+        }
+        prodigy_kwargs.update(config.optimizer_kwargs or {})
+        return Prodigy(optimizer_groups, **prodigy_kwargs)
+
+    if name == "dadaptation":
+        from dadaptation import DAdaptAdaGrad
+
+        ada_kwargs = {
+            "eps": config.optimizer_eps,
+            "weight_decay": config.weight_decay,
+        }
+        ada_kwargs.update(config.optimizer_kwargs or {})
+        return DAdaptAdaGrad(optimizer_groups, **ada_kwargs)
+
+    if name == "dadaptadam":
+        from dadaptation import DAdaptAdam
+
+        dadam_kwargs = {
+            "betas": betas,
+            "eps": config.optimizer_eps,
+            "weight_decay": config.weight_decay,
+            "decouple": True,
+        }
+        dadam_kwargs.update(config.optimizer_kwargs or {})
+        return DAdaptAdam(optimizer_groups, **dadam_kwargs)
+
+    if name == "dadaptlion":
+        from dadaptation import DAdaptLion
+
+        dlion_kwargs = {
+            "betas": betas,
+            "weight_decay": config.weight_decay,
+        }
+        dlion_kwargs.update(config.optimizer_kwargs or {})
+        return DAdaptLion(optimizer_groups, **dlion_kwargs)
+
+    if name == "lion":
+        try:
+            from lion_pytorch import Lion  # type: ignore
+        except ImportError as exc:  # pragma: no cover - dependencia opcional
+            raise RuntimeError(
+                "El optimizador Lion requiere el paquete `lion-pytorch`. "
+                "Instálalo con `uv pip install lion-pytorch`."
+            ) from exc
+
+        lion_kwargs = {
+            "betas": betas,
+            "weight_decay": config.weight_decay,
+        }
+        lion_kwargs.update(config.optimizer_kwargs or {})
+        return Lion(optimizer_groups, **lion_kwargs)
+
+    if name == "sgdnesterov":
+        sgd_kwargs = dict(config.optimizer_kwargs or {})
+        momentum = sgd_kwargs.pop("momentum", config.optimizer_momentum)
+        return torch.optim.SGD(
+            optimizer_groups,
+            momentum=momentum,
+            nesterov=True,
+            weight_decay=config.weight_decay,
+            **sgd_kwargs,
+        )
+
+    if name == "sgdnesterov8bit":
+        try:
+            import bitsandbytes as bnb  # type: ignore
+        except ImportError as exc:  # pragma: no cover - dependencia opcional
+            raise RuntimeError(
+                "El optimizador SGDNesterov8bit requiere `bitsandbytes`. "
+                "Instálalo con `uv pip install bitsandbytes`."
+            ) from exc
+
+        sgd8_kwargs = dict(config.optimizer_kwargs or {})
+        momentum = sgd8_kwargs.pop("momentum", config.optimizer_momentum)
+        return bnb.optim.SGD8bit(
+            optimizer_groups,
+            momentum=momentum,
+            nesterov=True,
+            weight_decay=config.weight_decay,
+            **sgd8_kwargs,
+        )
+
+    if name == "adafactor":
+        try:
+            from transformers.optimization import Adafactor
+        except ImportError as exc:  # pragma: no cover - dependencia opcional
+            raise RuntimeError(
+                "El optimizador Adafactor requiere el paquete `transformers`. "
+                "Instálalo con `uv pip install transformers`."
+            ) from exc
+
+        adafactor_kwargs: Dict[str, Any] = {
+            "lr": config.unet_lr,
+            "scale_parameter": False,
+            "relative_step": False,
+            "warmup_init": False,
+            "weight_decay": config.weight_decay,
+        }
+        adafactor_kwargs.update(config.optimizer_kwargs or {})
+        return Adafactor(optimizer_groups, **adafactor_kwargs)
+
+    if name == "came":
+        try:
+            from custom_scheduler.LoraEasyCustomOptimizer.came import CAME
+        except ImportError as exc:  # pragma: no cover - dependencia opcional
+            raise RuntimeError(
+                "El optimizador CAME requiere las utilidades personalizadas incluidas en este repositorio."
+            ) from exc
+
+        came_kwargs = {"weight_decay": config.weight_decay, "weight_decouple": True}
+        came_kwargs.update(config.optimizer_kwargs or {})
+        return CAME(optimizer_groups, **came_kwargs)
+
+    raise AssertionError("Ruta de optimizador no cubierta")
+
+
+def create_lr_scheduler(
+    config: TrainingConfig, optimizer: torch.optim.Optimizer, total_steps: int
+) -> torch.optim.lr_scheduler.LRScheduler:
+    name = config.scheduler_type.lower()
+    if name not in SCHEDULER_CHOICES:
+        raise ValueError(f"Scheduler '{config.scheduler_type}' no es compatible.")
+
+    warmup_steps = config.lr_warmup_steps
+    scheduler_kwargs = dict(config.scheduler_kwargs or {})
+
+    if name == "constant":
+        return get_constant_schedule(optimizer)
+
+    if name == "constant_with_warmup":
+        warmup = warmup_steps or max(total_steps // 10, 1)
+        return get_constant_schedule_with_warmup(optimizer, num_warmup_steps=warmup)
+
+    if name == "cosine":
+        warmup = warmup_steps or max(total_steps // 10, 1)
+        return get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup,
+            num_training_steps=total_steps,
+        )
+
+    if name == "linear":
+        warmup = warmup_steps or max(total_steps // 10, 1)
+        return get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup,
+            num_training_steps=total_steps,
+        )
+
+    if name == "polynomial":
+        warmup = warmup_steps or max(total_steps // 10, 1)
+        power = scheduler_kwargs.pop("power", config.scheduler_power)
+        lr_end = scheduler_kwargs.pop("lr_end", config.scheduler_min_lr)
+        return get_polynomial_decay_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup,
+            num_training_steps=total_steps,
+            lr_end=lr_end,
+            power=power,
+        )
+
+    if name == "cosine_with_restarts":
+        from custom_scheduler.LoraEasyCustomOptimizer.CosineAnnealingWarmRestarts import (
+            CosineAnnealingWarmRestarts,
+        )
+
+        first_cycle = scheduler_kwargs.pop(
+            "first_cycle_max_steps", config.scheduler_first_cycle_steps or total_steps
+        )
+        warmup = warmup_steps or max(first_cycle // 10, 1)
+        return CosineAnnealingWarmRestarts(
+            optimizer,
+            gamma=scheduler_kwargs.pop("gamma", config.scheduler_gamma),
+            cycle_multiplier=scheduler_kwargs.pop("cycle_multiplier", config.scheduler_cycle_multiplier),
+            first_cycle_max_steps=first_cycle,
+            min_lr=scheduler_kwargs.pop("min_lr", config.scheduler_min_lr),
+            warmup_steps=warmup,
+            **scheduler_kwargs,
+        )
+
+    if name == "rex":
+        from custom_scheduler.LoraEasyCustomOptimizer.RexAnnealingWarmRestarts import (
+            RexAnnealingWarmRestarts,
+        )
+
+        first_cycle = scheduler_kwargs.pop(
+            "first_cycle_max_steps", config.scheduler_first_cycle_steps or total_steps
+        )
+        warmup = warmup_steps or max(first_cycle // 10, 1)
+        return RexAnnealingWarmRestarts(
+            optimizer,
+            gamma=scheduler_kwargs.pop("gamma", config.scheduler_gamma),
+            cycle_multiplier=scheduler_kwargs.pop("cycle_multiplier", config.scheduler_cycle_multiplier),
+            first_cycle_max_steps=first_cycle,
+            min_lr=scheduler_kwargs.pop("min_lr", config.scheduler_min_lr),
+            warmup_steps=warmup,
+            d=scheduler_kwargs.pop("d", config.scheduler_d),
+            **scheduler_kwargs,
+        )
+
+    raise AssertionError("Ruta de scheduler no cubierta")
 
 
 def setup_unet_lora_layers(pipe: StableDiffusionXLPipeline, rank: int, alpha: int) -> List[torch.nn.Parameter]:
@@ -261,12 +574,8 @@ def train(config: TrainingConfig) -> None:
     if text_encoder_params:
         optimizer_groups.append({"params": [p for p in text_encoder_params if p.requires_grad], "lr": config.text_encoder_lr})
 
-    optimizer = torch.optim.AdamW(optimizer_groups, betas=(0.9, 0.999), weight_decay=1e-2, eps=1e-8)
-    lr_scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=max(total_steps // 10, 1),
-        num_training_steps=total_steps,
-    )
+    optimizer = create_optimizer(config, optimizer_groups)
+    lr_scheduler = create_lr_scheduler(config, optimizer, total_steps)
 
     unet, text_encoder_one, text_encoder_two, optimizer, lr_scheduler, dataloader = accelerator.prepare(
         pipe.unet, pipe.text_encoder, pipe.text_encoder_2, optimizer, lr_scheduler, dataloader
@@ -405,6 +714,20 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--pretrained-model", type=str, default="stabilityai/stable-diffusion-xl-base-1.0")
     parser.add_argument("--vae", type=str, default=None)
+    parser.add_argument("--optimizer", type=str.lower, choices=sorted(OPTIMIZER_CHOICES), default="adamw")
+    parser.add_argument("--weight-decay", type=float, default=1e-2)
+    parser.add_argument("--optimizer-beta1", type=float, default=0.9)
+    parser.add_argument("--optimizer-beta2", type=float, default=0.999)
+    parser.add_argument("--optimizer-eps", type=float, default=1e-8)
+    parser.add_argument("--optimizer-momentum", type=float, default=0.9)
+    parser.add_argument("--lr-scheduler", type=str.lower, choices=sorted(SCHEDULER_CHOICES), default="cosine")
+    parser.add_argument("--lr-warmup-steps", type=int, default=None)
+    parser.add_argument("--scheduler-first-cycle-steps", type=int, default=None)
+    parser.add_argument("--scheduler-cycle-multiplier", type=float, default=1.0)
+    parser.add_argument("--scheduler-gamma", type=float, default=1.0)
+    parser.add_argument("--scheduler-min-lr", type=float, default=1e-6)
+    parser.add_argument("--scheduler-d", type=float, default=0.9)
+    parser.add_argument("--scheduler-power", type=float, default=1.0)
 
     args = parser.parse_args()
     config = TrainingConfig(
@@ -425,6 +748,20 @@ def parse_args() -> TrainingConfig:
         seed=args.seed,
         pretrained_model_name_or_path=args.pretrained_model,
         vae_model_name_or_path=args.vae,
+        optimizer_type=args.optimizer,
+        weight_decay=args.weight_decay,
+        optimizer_beta1=args.optimizer_beta1,
+        optimizer_beta2=args.optimizer_beta2,
+        optimizer_eps=args.optimizer_eps,
+        optimizer_momentum=args.optimizer_momentum,
+        scheduler_type=args.lr_scheduler,
+        lr_warmup_steps=args.lr_warmup_steps,
+        scheduler_first_cycle_steps=args.scheduler_first_cycle_steps,
+        scheduler_cycle_multiplier=args.scheduler_cycle_multiplier,
+        scheduler_gamma=args.scheduler_gamma,
+        scheduler_min_lr=args.scheduler_min_lr,
+        scheduler_d=args.scheduler_d,
+        scheduler_power=args.scheduler_power,
     )
     return config.normalised_paths()
 
