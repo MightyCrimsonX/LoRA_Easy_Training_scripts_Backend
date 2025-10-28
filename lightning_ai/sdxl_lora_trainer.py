@@ -5,9 +5,11 @@ import argparse
 import json
 import math
 import os
+import random
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -73,8 +75,7 @@ SCHEDULER_CHOICES = {
 
 @dataclass
 class TrainingConfig:
-    dataset_metadata: Path
-    images_root: Path
+    dataset_dir: Path
     output_dir: Path
     num_epochs: int = 1
     batch_size: int = 1
@@ -106,14 +107,15 @@ class TrainingConfig:
     scheduler_power: float = 1.0
     optimizer_kwargs: Dict[str, Any] = field(default_factory=dict)
     scheduler_kwargs: Dict[str, Any] = field(default_factory=dict)
+    shuffle_tags: bool = False
+    activation_tags: Sequence[str] = field(default_factory=tuple)
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
             return path if path.is_absolute() else (LIGHTNING_ROOT / path).resolve()
 
         return TrainingConfig(
-            dataset_metadata=_resolve(self.dataset_metadata),
-            images_root=_resolve(self.images_root),
+            dataset_dir=_resolve(self.dataset_dir),
             output_dir=_resolve(self.output_dir),
             num_epochs=self.num_epochs,
             batch_size=self.batch_size,
@@ -145,13 +147,33 @@ class TrainingConfig:
             scheduler_power=self.scheduler_power,
             optimizer_kwargs=dict(self.optimizer_kwargs or {}),
             scheduler_kwargs=dict(self.scheduler_kwargs or {}),
+            shuffle_tags=self.shuffle_tags,
+            activation_tags=tuple(self.activation_tags),
         )
 
 
-class JSONCaptionDataset(Dataset):
-    def __init__(self, metadata_path: Path, images_root: Path, resolution: int) -> None:
-        self.images_root = images_root
+class FolderCaptionDataset(Dataset):
+    _TAG_SPLITTER = re.compile(r"[,\n]+")
+    _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+
+    def __init__(
+        self,
+        dataset_dir: Path,
+        resolution: int,
+        activation_tags: Sequence[str] | None = None,
+        shuffle_tags: bool = False,
+    ) -> None:
+        self.dataset_dir = dataset_dir
         self.resolution = resolution
+        self.shuffle_tags = shuffle_tags
+        self.activation_tags = tuple(tag.strip() for tag in (activation_tags or ()) if tag.strip())
+        self._activation_lookup = {tag for tag in self.activation_tags}
+
+        if not self.dataset_dir.exists():
+            raise FileNotFoundError(f"El directorio del dataset no existe: {dataset_dir}")
+        if not self.dataset_dir.is_dir():
+            raise NotADirectoryError(f"Se esperaba un directorio para el dataset y se recibió: {dataset_dir}")
+
         self.transform = transforms.Compose(
             [
                 transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BICUBIC),
@@ -161,23 +183,55 @@ class JSONCaptionDataset(Dataset):
             ]
         )
 
-        with metadata_path.open("r", encoding="utf-8") as handle:
-            self.entries = [json.loads(line) for line in handle if line.strip()]
+        self.entries: List[Dict[str, object]] = []
+        for image_path in sorted(self.dataset_dir.rglob("*")):
+            if image_path.suffix.lower() not in self._IMAGE_EXTENSIONS:
+                continue
+
+            caption_path = image_path.with_suffix(".txt")
+            if not caption_path.exists():
+                raise FileNotFoundError(
+                    f"No se encontró el archivo de texto para la imagen {image_path.name} en {caption_path}."
+                )
+
+            caption_raw = caption_path.read_text(encoding="utf-8").strip()
+            if not caption_raw:
+                raise ValueError(f"El archivo de texto {caption_path} está vacío.")
+
+            tags = [tag.strip() for tag in self._TAG_SPLITTER.split(caption_raw) if tag.strip()]
+            if not tags:
+                raise ValueError(
+                    f"El archivo de texto {caption_path} no contiene tags separados por comas o saltos de línea."
+                )
+
+            self.entries.append({"image_path": image_path, "tags": tags})
 
         if not self.entries:
-            raise ValueError(f"No se encontraron datos en {metadata_path}.")
+            raise ValueError(f"No se encontraron imágenes válidas en {dataset_dir}.")
 
     def __len__(self) -> int:
         return len(self.entries)
 
+    def _build_prompt(self, tags: Sequence[str]) -> str:
+        ordered_tags = list(tags)
+        if self.shuffle_tags and len(ordered_tags) > 1:
+            ordered_tags = random.sample(ordered_tags, len(ordered_tags))
+
+        if self.activation_tags:
+            remaining = [tag for tag in ordered_tags if tag not in self._activation_lookup]
+            ordered_tags = list(self.activation_tags) + remaining
+
+        return ", ".join(ordered_tags)
+
     def __getitem__(self, idx: int) -> Dict[str, object]:
         record = self.entries[idx]
-        image_path = self.images_root / record["file"]
-        caption = record["prompt"]
+        image_path: Path = record["image_path"]  # type: ignore[assignment]
+        tags: Sequence[str] = record["tags"]  # type: ignore[assignment]
 
         image = Image.open(image_path).convert("RGB")
         pixel_values = self.transform(image)
-        return {"pixel_values": pixel_values, "prompt": caption}
+        prompt = self._build_prompt(tags)
+        return {"pixel_values": pixel_values, "prompt": prompt}
 
 
 def collate_examples(examples: Iterable[Dict[str, object]]) -> Dict[str, object]:
@@ -503,7 +557,12 @@ def train(config: TrainingConfig) -> None:
     )
     LOGGER.info("Configuración final: %s", json.dumps(asdict(config), indent=2, default=str))
 
-    dataset = JSONCaptionDataset(config.dataset_metadata, config.images_root, config.resolution)
+    dataset = FolderCaptionDataset(
+        config.dataset_dir,
+        config.resolution,
+        activation_tags=config.activation_tags,
+        shuffle_tags=config.shuffle_tags,
+    )
     dataloader = DataLoader(
         dataset,
         batch_size=config.batch_size,
@@ -515,11 +574,14 @@ def train(config: TrainingConfig) -> None:
     num_images = len(dataset)
     total_steps = calculate_total_steps(num_images, config.num_repeats, config.num_epochs, config.batch_size)
     LOGGER.info(
-        "Dataset: %d imágenes | repeats: %d | epochs: %d => %d steps",
+        "Dataset (%s): %d imágenes | repeats: %d | epochs: %d => %d steps | shuffle_tags=%s | activation_tags=%s",
+        config.dataset_dir,
         num_images,
         config.num_repeats,
         config.num_epochs,
         total_steps,
+        config.shuffle_tags,
+        ", ".join(config.activation_tags) if config.activation_tags else "(ninguno)",
     )
 
     if config.mixed_precision == "fp16":
@@ -697,8 +759,12 @@ def train(config: TrainingConfig) -> None:
 
 def parse_args() -> TrainingConfig:
     parser = argparse.ArgumentParser(description="Entrena adaptadores LoRA para SDXL en Lightning AI.")
-    parser.add_argument("--dataset-metadata", type=Path, required=True, help="Archivo JSONL con campos `file` y `prompt`.")
-    parser.add_argument("--images-root", type=Path, required=True, help="Directorio que contiene las imágenes del dataset.")
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        required=True,
+        help="Directorio que contiene las imágenes y archivos .txt emparejados.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True, help="Directorio donde se guardarán los pesos LoRA.")
     parser.add_argument("--num-epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -728,11 +794,22 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument("--scheduler-d", type=float, default=0.9)
     parser.add_argument("--scheduler-power", type=float, default=1.0)
+    parser.add_argument(
+        "--shuffle-tags",
+        action="store_true",
+        help="Baraja aleatoriamente los tags de cada prompt manteniendo primero los activadores.",
+    )
+    parser.add_argument(
+        "--activation-tags",
+        type=str,
+        default="",
+        help="Cadena de tags de activación separados por comas que se antepondrán a cada prompt.",
+    )
 
     args = parser.parse_args()
+    activation_tags = [tag.strip() for tag in re.split(r"[,\n]+", args.activation_tags) if tag.strip()]
     config = TrainingConfig(
-        dataset_metadata=args.dataset_metadata,
-        images_root=args.images_root,
+        dataset_dir=args.dataset_dir,
         output_dir=args.output_dir,
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
@@ -762,6 +839,8 @@ def parse_args() -> TrainingConfig:
         scheduler_min_lr=args.scheduler_min_lr,
         scheduler_d=args.scheduler_d,
         scheduler_power=args.scheduler_power,
+        shuffle_tags=args.shuffle_tags,
+        activation_tags=tuple(activation_tags),
     )
     return config.normalised_paths()
 
