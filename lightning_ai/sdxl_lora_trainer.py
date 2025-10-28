@@ -150,6 +150,7 @@ class TrainingConfig:
     shuffle_tags: bool = False
     activation_tags: Sequence[str] = field(default_factory=tuple)
     use_optimizer_recommended_args: bool = False
+    lora_name: str = "sdxl_lora"
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
@@ -192,6 +193,7 @@ class TrainingConfig:
             activation_tags=tuple(self.activation_tags),
             use_optimizer_recommended_args=self.use_optimizer_recommended_args,
             base_model=self.base_model,
+            lora_name=self.lora_name,
         )
 
     def resolved_pretrained_model(self) -> str:
@@ -206,6 +208,14 @@ class TrainingConfig:
         if candidate in BASE_MODEL_CHOICES:
             return BASE_MODEL_CHOICES[candidate]
         return candidate
+
+    def resolved_lora_weight_name(self) -> str:
+        raw_name = (self.lora_name or "").strip()
+        if not raw_name:
+            raw_name = "sdxl_lora"
+        if not raw_name.endswith(".safetensors"):
+            raw_name = f"{raw_name}.safetensors"
+        return raw_name
 
 
 class FolderCaptionDataset(Dataset):
@@ -844,14 +854,16 @@ def train(config: TrainingConfig) -> None:
                 adapter_name="default",
             )
 
+        weight_name = config.resolved_lora_weight_name()
         pipe.save_lora_weights(
             config.output_dir,
             unet_lora_layers=unet_state_dict,
             text_encoder_lora_layers=text_encoder_lora_state or None,
             text_encoder_2_lora_layers=text_encoder2_lora_state or None,
             safe_serialization=True,
+            weight_name=weight_name,
         )
-        LOGGER.info("Pesos LoRA guardados en %s", config.output_dir)
+        LOGGER.info("Pesos LoRA guardados en %s/%s", config.output_dir, weight_name)
 
 
 def parse_args() -> TrainingConfig:
@@ -916,6 +928,12 @@ def parse_args() -> TrainingConfig:
         default="",
         help="Cadena de tags de activación separados por comas que se antepondrán a cada prompt.",
     )
+    parser.add_argument(
+        "--lora-name",
+        type=str,
+        default="sdxl_lora",
+        help="Nombre base del archivo .safetensors resultante. Se añadirá la extensión si falta.",
+    )
 
     args = parser.parse_args()
     activation_tags = [tag.strip() for tag in re.split(r"[,\n]+", args.activation_tags) if tag.strip()]
@@ -954,6 +972,7 @@ def parse_args() -> TrainingConfig:
         scheduler_power=args.scheduler_power,
         shuffle_tags=args.shuffle_tags,
         activation_tags=tuple(activation_tags),
+        lora_name=args.lora_name,
     )
     return config.normalised_paths()
 
