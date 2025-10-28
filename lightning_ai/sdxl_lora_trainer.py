@@ -29,7 +29,7 @@ from diffusers.utils.import_utils import is_xformers_available
 try:
     from diffusers.utils.peft_utils import convert_peft_state_dict_to_diffusers, get_peft_model_state_dict
 except ImportError:  # pragma: no cover - older diffusers versions
-    from diffusers.utils.peft_utils import get_peft_model_state_dict
+    from peft import get_peft_model_state_dict
 
     try:
         from diffusers.loaders.peft import (
