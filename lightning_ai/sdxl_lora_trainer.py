@@ -1398,6 +1398,13 @@ def parse_args() -> TrainingConfig:
             "'sdpa' mantiene la atención estándar de PyTorch."
         ),
     )
+    parser.add_argument(
+        "--xformers",
+        dest="cross_attention_backend",
+        action="store_const",
+        const="xformers",
+        help="Atajo para activar la atención eficiente de xformers (equivalente a --cross-attention xformers).",
+    )
 
     args = parser.parse_args()
     activation_tags = [tag.strip() for tag in re.split(r"[,\n]+", args.activation_tags) if tag.strip()]
