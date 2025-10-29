@@ -1255,12 +1255,38 @@ def train(config: TrainingConfig) -> None:
 
                     noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
 
-                    prompt_embeds, pooled_prompt_embeds = pipe.encode_prompt(
+                    prompt_outputs = pipe.encode_prompt(
                         batch["prompts"],
                         device=accelerator.device,
                         num_images_per_prompt=1,
                         do_classifier_free_guidance=False,
                     )
+
+                    if isinstance(prompt_outputs, tuple):
+                        if len(prompt_outputs) == 2:
+                            prompt_embeds, pooled_prompt_embeds = prompt_outputs
+                        elif len(prompt_outputs) == 3:
+                            prompt_embeds, _, pooled_prompt_embeds = prompt_outputs
+                        elif len(prompt_outputs) >= 4:
+                            prompt_embeds = prompt_outputs[0]
+                            pooled_prompt_embeds = prompt_outputs[2]
+                        else:
+                            raise ValueError(
+                                "encode_prompt devolvió una cantidad inesperada de tensores"
+                            )
+                    elif hasattr(prompt_outputs, "prompt_embeds"):
+                        prompt_embeds = prompt_outputs.prompt_embeds  # type: ignore[assignment]
+                        pooled_prompt_embeds = getattr(
+                            prompt_outputs, "pooled_prompt_embeds", None
+                        )
+                        if pooled_prompt_embeds is None:
+                            raise ValueError(
+                                "encode_prompt no proporcionó 'pooled_prompt_embeds' en el resultado"
+                            )
+                    else:
+                        raise TypeError(
+                            "El método encode_prompt devolvió un tipo inesperado."
+                        )
 
                     add_time_ids = pipe._get_add_time_ids(
                         original_size=(config.resolution, config.resolution),
