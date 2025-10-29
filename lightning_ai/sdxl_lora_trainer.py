@@ -924,9 +924,6 @@ def create_lr_scheduler(
 def setup_unet_lora_layers(pipe: StableDiffusionXLPipeline, rank: int, alpha: int) -> List[torch.nn.Parameter]:
     lora_attn_procs = {}
     for name, attn_processor in pipe.unet.attn_processors.items():
-        if not isinstance(attn_processor, (AttnProcessor, AttnProcessor2_0, AttnAddedKVProcessor2_0)):
-            continue
-
         if "mid_block" in name:
             hidden_size = pipe.unet.config.block_out_channels[-1]
         elif "up_blocks" in name:
