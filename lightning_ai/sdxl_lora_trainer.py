@@ -111,6 +111,8 @@ SCHEDULER_CHOICES = {
     "rex",
 }
 
+CROSS_ATTENTION_CHOICES = {"xformers", "sdpa"}
+
 
 @dataclass(frozen=True)
 class BaseModelPreset:
@@ -273,6 +275,7 @@ class TrainingConfig:
     activation_tags: Sequence[str] = field(default_factory=tuple)
     use_optimizer_recommended_args: bool = False
     lora_name: str = "sdxl_lora"
+    cross_attention_backend: str = "xformers"
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
@@ -319,6 +322,7 @@ class TrainingConfig:
             activation_tags=tuple(self.activation_tags),
             use_optimizer_recommended_args=self.use_optimizer_recommended_args,
             lora_name=self.lora_name,
+            cross_attention_backend=self.cross_attention_backend,
         )
 
     def resolved_base_target(self) -> Tuple[str, bool, str, Optional[str]]:
@@ -959,6 +963,32 @@ def setup_unet_lora_layers(pipe: StableDiffusionXLPipeline, rank: int, alpha: in
     return params
 
 
+def apply_cross_attention_backend(pipe: StableDiffusionXLPipeline, backend: str) -> None:
+    backend_key = (backend or "xformers").lower()
+    if backend_key not in CROSS_ATTENTION_CHOICES:
+        raise ValueError(f"Backend de atención cruzada desconocido: {backend}")
+
+    if backend_key == "xformers":
+        if not is_xformers_available():  # pragma: no cover - depende del entorno
+            raise RuntimeError(
+                "Se solicitó xformers como backend de atención cruzada, pero no está instalado. "
+                "Instálalo con `uv pip install xformers` y vuelve a intentarlo."
+            )
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception as exc:  # pragma: no cover - depende de la versión de diffusers
+            raise RuntimeError("No se pudo habilitar la atención eficiente con xformers.") from exc
+        LOGGER.info("Atención cruzada configurada con xformers.")
+        return
+
+    pipe.unet.set_default_attn_processor()
+    try:
+        pipe.enable_attention_slicing()
+    except Exception as exc:  # pragma: no cover - compatibilidad retro
+        LOGGER.warning("No se pudo activar attention slicing al usar SDPA: %s", exc)
+    LOGGER.info("Atención cruzada configurada con SDPA (attention slicing activado).")
+
+
 def setup_text_encoder_lora(model: torch.nn.Module, rank: int, alpha: int) -> torch.nn.Module:
     lora_config = LoraConfig(
         r=rank,
@@ -1074,8 +1104,7 @@ def train(config: TrainingConfig) -> None:
         LOGGER.info("El scheduler utilizará predicción de velocidad (v_prediction=True)")
     pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config, **scheduler_kwargs)
     pipe.enable_vae_slicing()
-    if is_xformers_available():  # pragma: no cover
-        pipe.enable_xformers_memory_efficient_attention()
+    apply_cross_attention_backend(pipe, config.cross_attention_backend)
 
     unet_params = setup_unet_lora_layers(pipe, config.network_rank, config.network_alpha)
 
@@ -1334,6 +1363,17 @@ def parse_args() -> TrainingConfig:
         default="sdxl_lora",
         help="Nombre base del archivo .safetensors resultante. Se añadirá la extensión si falta.",
     )
+    parser.add_argument(
+        "--cross-attention",
+        dest="cross_attention_backend",
+        type=str.lower,
+        choices=sorted(CROSS_ATTENTION_CHOICES),
+        default="xformers",
+        help=(
+            "Backend de atención cruzada a usar. 'xformers' requiere tener instalado el paquete homónimo; "
+            "'sdpa' mantiene la atención estándar de PyTorch."
+        ),
+    )
 
     args = parser.parse_args()
     activation_tags = [tag.strip() for tag in re.split(r"[,\n]+", args.activation_tags) if tag.strip()]
@@ -1376,6 +1416,7 @@ def parse_args() -> TrainingConfig:
         shuffle_tags=args.shuffle_tags,
         activation_tags=tuple(activation_tags),
         lora_name=args.lora_name,
+        cross_attention_backend=args.cross_attention_backend,
     )
     return config.normalised_paths()
 
