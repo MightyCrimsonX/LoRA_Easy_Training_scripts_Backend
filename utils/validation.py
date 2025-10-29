@@ -3,8 +3,23 @@ import math
 from datetime import datetime
 from pathlib import Path
 
-from library.train_util import BucketManager
 from PIL import Image
+
+from utils.kohya import ensure_on_path, get_repo_root
+
+try:
+    ensure_on_path()
+except (FileNotFoundError, NotADirectoryError) as exc:
+    raise RuntimeError(f"Kohya repository not available: {exc}") from exc
+
+try:
+    from library.train_util import BucketManager  # type: ignore[import-not-found]
+except ModuleNotFoundError as exc:
+    repo_root = get_repo_root()
+    raise ModuleNotFoundError(
+        "Failed to import 'library.train_util'. Ensure dependencies from "
+        f"{repo_root} are installed."
+    ) from exc
 
 
 def validate(args: dict) -> tuple[bool, bool, list[str], dict, dict]:
