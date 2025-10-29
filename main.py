@@ -7,6 +7,7 @@ else:
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,20 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from transformers import CLIPTokenizer
+from utils.kohya import (
+    build_training_command,
+    ensure_on_path,
+    get_repo_root,
+    get_training_script,
+    inherit_environment,
+    normalise_extra_args,
+)
+
+try:
+    ensure_on_path()
+except (FileNotFoundError, NotADirectoryError) as exc:
+    print(f"Warning: {exc}")
+
 from utils.process import process_args, process_dataset_args
 from utils.tunnel_service import CloudflaredTunnel, create_tunnel
 from utils.validation import validate
@@ -122,8 +137,8 @@ async def tokenize_text(request: Request) -> JSONResponse:
 
 async def start_training(request: Request) -> JSONResponse:
     global server
-    temp = json.loads(app.state.CONFIG.read_text())
-    if "colab" in temp and temp["colab"]:
+    config_payload = json.loads(app.state.CONFIG.read_text())
+    if config_payload.get("colab"):
         await kill_tunnel_service()
         await stop_server()
         return
@@ -135,31 +150,8 @@ async def start_training(request: Request) -> JSONResponse:
     is_sdxl = request.query_params.get("sdxl", "False") == "True"
     train_type = request.query_params.get("train_mode", "lora")
     is_flux = request.query_params.get("flux", "False") == "True"
-    match [train_type, is_sdxl, is_flux]:
-        case ["lora", False, False]:
-            app.state.TRAIN_SCRIPT = "train_network.py"
-        case ["lora", True, False]:
-            app.state.TRAIN_SCRIPT = "sdxl_train_network.py"
-        case ["lora", False, True]:
-            app.state.TRAIN_SCRIPT = "flux_train_network.py"
-        case ["textual_inversion", False, False]:
-            app.state.TRAIN_SCRIPT = "train_textual_inversion.py"
-        case ["textual_inversion", True, False]:
-            app.state.TRAIN_SCRIPT = "sdxl_train_textual_inversion.py"
-        case _:
-            print("Unknown training request: {request.query_params}")
-            return JSONResponse(
-                {
-                    "detail": "Invalid Train Parameters",
-                    "sdxl": is_sdxl,
-                    "train_type": train_type,
-                    "flux": is_flux,
-                },
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-
-    server_config_dict = json.loads(app.state.CONFIG.read_text()) if app.state.CONFIG else {}
-    python = sys.executable
+    server_config_dict = config_payload if app.state.CONFIG else {}
+    python = server_config_dict.get("kohya_python", sys.executable)
     config = Path("runtime_store/config.toml")
     dataset = Path("runtime_store/dataset.toml")
     if not config.is_file() or not dataset.is_file():
@@ -167,30 +159,51 @@ async def start_training(request: Request) -> JSONResponse:
             {"detail": "No Previously Validated Args"},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    print(app.state.TRAIN_SCRIPT)
-    app.state.TRAINING_THREAD = subprocess.Popen(
-        [
-            f"{python}",
-            f"{Path(f'sd_scripts/{app.state.TRAIN_SCRIPT}').resolve()}",
-            f"--config_file={config.resolve()}",
-            f"--dataset_config={dataset.resolve()}",
-        ]
+    try:
+        script_path = get_training_script(train_type, is_sdxl, is_flux)
+    except (ValueError, FileNotFoundError) as exc:
+        return JSONResponse(
+            {"detail": str(exc)},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    app.state.TRAIN_SCRIPT = script_path.name
+
+    extra_cli_args = normalise_extra_args(server_config_dict.get("kohya_extra_args"))
+    launch_with_accelerate = server_config_dict.get("use_accelerate_launcher", True)
+    command = build_training_command(
+        python,
+        script_path,
+        config.resolve(),
+        dataset.resolve(),
+        extra_cli_args,
+        launch_with_accelerate,
     )
-    if (
-        "kill_tunnel_on_train_start" in server_config_dict
-        and server_config_dict["kill_tunnel_on_train_start"]
-    ):
+    try:
+        environment = inherit_environment(get_repo_root())
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    cwd = script_path.parent
+
+    print("Launching kohya training:", shlex.join(command))
+    app.state.TRAINING_THREAD = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=environment,
+    )
+
+    if server_config_dict.get("kill_tunnel_on_train_start") and app.state.TUNNEL:
         app.state.TUNNEL.kill_service()
         app.state.TUNNEL = None
-    if "kill_server_on_train_end" in server_config_dict and server_config_dict["kill_server_on_train_end"]:
+    if server_config_dict.get("kill_server_on_train_end"):
         app.state.MONITOR_THREAD = Thread(target=monitor_training_thread, daemon=True)
         app.state.MONITOR_THREAD.start()
     return JSONResponse({"detail": "Training Started", "training": True})
 
 
 async def stop_training(request: Request) -> JSONResponse:
-    force = bool(request.query_params.get("force", False))
-    if not app.state.TRAINING_THREAD and app.state.TRAINING_THREAD.poll() is not None:
+    force = request.query_params.get("force", "False").lower() == "true"
+    if not app.state.TRAINING_THREAD or app.state.TRAINING_THREAD.poll() is not None:
         return JSONResponse(
             {"detail": "Not Currently Training"},
             status_code=status.HTTP_400_BAD_REQUEST,
