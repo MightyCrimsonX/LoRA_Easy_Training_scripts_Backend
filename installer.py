@@ -79,23 +79,42 @@ def setup_accelerate(platform: str) -> None:
 
 
 def setup_venv():
-    subprocess.check_call(
-        "uv pip install --python /content/trainer/sd_scripts/venv/bin/python torch==2.5.1 torchvision==0.20.1 -f https://download.pytorch.org/whl/cu124 --no-progress",
-        shell=PLATFORM == "linux",
-    )
-    if PLATFORM == "windows":
-        subprocess.check_call("venv\\Scripts\\python.exe ..\\fix_torch.py")
+    venv_root = Path("venv")
+    python_bin = venv_root / ("Scripts/python.exe" if PLATFORM == "windows" else "bin/python")
+    venv_python = str(python_bin.resolve())
 
+    pip_args = ["uv", "pip", "install", "--python", venv_python]
+    torch_args = pip_args + [
+        "torch==2.5.1",
+        "torchvision==0.20.1",
+        "-f",
+        "https://download.pytorch.org/whl/cu124",
+        "--no-progress",
+    ]
+    subprocess.check_call(torch_args)
+
+    if PLATFORM == "windows":
+        subprocess.check_call([str(python_bin), str(Path("..") / "fix_torch.py")])
+
+    xformers_args = pip_args + [
+        "xformers==0.0.29.post1",
+        "-f",
+        "https://download.pytorch.org/whl/cu124",
+        "--no-progress",
+    ]
+    subprocess.check_call(xformers_args)
+
+    def pip_install(*packages: str) -> None:
+        subprocess.check_call(pip_args + list(packages))
+
+    pip_install("-r", "requirements.txt", "--no-progress")
+    pip_install("../custom_scheduler/.", "--no-progress")
+    pip_install("-r", "../requirements.txt", "--no-progress")
+    pip_install("../lycoris/.", "--no-progress")
+    subprocess.check_call(["uv", "pip", "install", "aria2", "--no-progress"])
     subprocess.check_call(
-        "uv pip install --python /content/trainer/sd_scripts/venv/bin/python xformers==0.0.29.post1 -f https://download.pytorch.org/whl/cu124 --no-progress",
-        shell=PLATFORM == "linux",
+        ["uv", "pip", "uninstall", "--python", venv_python, "-y", "rich"]
     )
-    subprocess.check_call(f"uv pip install --python {venv_uv} -r requirements.txt --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call(f"uv pip install --python {venv_uv} ../custom_scheduler/. --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call(f"uv pip install --python {venv_uv} -r ../requirements.txt --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call(f"uv pip install --python {venv_uv} ../lycoris/. --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call(f"uv pip install aria2 --no-progress", shell=PLATFORM == "linux")
-    subprocess.check_call(f"uv pip uninstall --python {venv_uv} -- y rich", shell=PLATFORM == "linux")
 
 
 # colab only

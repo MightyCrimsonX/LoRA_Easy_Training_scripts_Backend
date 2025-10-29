@@ -3,8 +3,12 @@ import math
 from datetime import datetime
 from pathlib import Path
 
-from library.train_util import BucketManager
-from PIL import Image
+from utils.kohya import ensure_on_path
+
+try:
+    ensure_on_path()
+except (FileNotFoundError, NotADirectoryError) as exc:
+    raise RuntimeError(f"Kohya repository not available: {exc}") from exc
 
 
 def validate(args: dict) -> tuple[bool, bool, list[str], dict, dict]:
@@ -274,36 +278,38 @@ def calculate_steps(
     num_epochs: int,
     grad_acc_steps: int = 1,
 ) -> int:
+    """Calculate total optimiser steps when training by epochs.
+
+    The calculation follows the relationship requested for LoRA training:
+    ``steps = ceil((num_images * num_repeats * num_epochs) / (batch_size * grad_acc))``.
+    When multiple subsets are defined the image count and repeat factor are
+    aggregated before applying the formula.
+    """
+
     general_args: dict = dataset_args["general"]
-    subsets: list = dataset_args["subsets"]
-    supported_types = [".png", ".jpg", ".jpeg", ".webp", ".bmp"]
-    resolution = (
-        (general_args["resolution"], general_args["resolution"])
-        if isinstance(general_args["resolution"], int)
-        else general_args["resolution"]
-    )
-    if general_args.get("enable_bucket", False):
-        bucketManager = BucketManager(
-            general_args.get("bucket_no_upscale", False),
-            resolution,
-            general_args["min_bucket_reso"],
-            general_args["max_bucket_reso"],
-            general_args["bucket_reso_steps"],
-        )
-        if not general_args.get("bucket_no_upscale", False):
-            bucketManager.make_buckets()
-    else:
-        bucketManager = BucketManager(False, resolution, None, None, None)
-        bucketManager.set_predefined_resos([resolution])
+    subsets: list[dict] = dataset_args["subsets"]
+    supported_types = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+    total_weighted_images = 0
     for subset in subsets:
-        for image in Path(subset["image_dir"]).iterdir():
-            if image.suffix not in supported_types:
-                continue
-            with Image.open(image) as img:
-                bucket_reso, _, _ = bucketManager.select_bucket(img.width, img.height)
-                for _ in range(subset["num_repeats"]):
-                    bucketManager.add_image(bucket_reso, image)
-    steps_before_acc = sum(
-        math.ceil(len(bucket) / general_args["batch_size"]) for bucket in bucketManager.buckets
-    )
-    return math.ceil(steps_before_acc / grad_acc_steps) * num_epochs
+        image_dir = Path(subset["image_dir"])
+        repeats = int(subset.get("num_repeats", 1))
+        subset_images = sum(
+            1
+            for image in image_dir.iterdir()
+            if image.is_file() and image.suffix.lower() in supported_types
+        )
+        total_weighted_images += subset_images * repeats
+
+    if total_weighted_images == 0:
+        return 0
+
+    batch_size = int(general_args.get("batch_size", 1))
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
+
+    grad_acc_steps = max(int(grad_acc_steps), 1)
+    effective_batch = batch_size * grad_acc_steps
+    steps_per_epoch = math.ceil(total_weighted_images / effective_batch)
+    total_epochs = max(int(num_epochs), 0)
+    return steps_per_epoch * total_epochs
