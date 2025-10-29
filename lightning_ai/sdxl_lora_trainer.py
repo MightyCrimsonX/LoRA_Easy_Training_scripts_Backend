@@ -114,6 +114,54 @@ SCHEDULER_CHOICES = {
 CROSS_ATTENTION_CHOICES = {"xformers", "sdpa"}
 
 
+def _coerce_tensor(value: Union[torch.Tensor, Sequence[torch.Tensor], None], name: str) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, (list, tuple)):
+        filtered = [item for item in value if isinstance(item, torch.Tensor)]
+        if not filtered:
+            raise TypeError(f"El resultado de encode_prompt no contiene tensores válidos para '{name}'.")
+        if len(filtered) > 1:
+            warnings.warn(
+                f"Se recibieron múltiples tensores para '{name}'. Se usará únicamente el primero.",
+                RuntimeWarning,
+            )
+        return filtered[0]
+    raise TypeError(f"El resultado de encode_prompt contiene un tipo no soportado para '{name}'.")
+
+
+def _normalize_prompt_outputs(outputs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+    prompt_embeds: Optional[Union[torch.Tensor, Sequence[torch.Tensor]]] = None
+    pooled_prompt_embeds: Optional[Union[torch.Tensor, Sequence[torch.Tensor]]] = None
+
+    if isinstance(outputs, tuple):
+        if len(outputs) == 2:
+            prompt_embeds, pooled_prompt_embeds = outputs
+        elif len(outputs) == 3:
+            prompt_embeds, _, pooled_prompt_embeds = outputs
+        elif len(outputs) >= 4:
+            prompt_embeds = outputs[0]
+            pooled_prompt_embeds = outputs[2]
+        else:
+            raise ValueError("encode_prompt devolvió una tupla vacía.")
+    elif hasattr(outputs, "prompt_embeds"):
+        prompt_embeds = getattr(outputs, "prompt_embeds", None)
+        pooled_prompt_embeds = getattr(outputs, "pooled_prompt_embeds", None)
+        if pooled_prompt_embeds is None:
+            pooled_prompt_embeds = getattr(outputs, "add_text_embeds", None)
+    else:
+        raise TypeError("El método encode_prompt devolvió un tipo inesperado.")
+
+    if prompt_embeds is None:
+        raise ValueError("encode_prompt no proporcionó 'prompt_embeds'.")
+    if pooled_prompt_embeds is None:
+        raise ValueError("encode_prompt no proporcionó 'pooled_prompt_embeds'.")
+
+    prompt_tensor = _coerce_tensor(prompt_embeds, "prompt_embeds")
+    pooled_tensor = _coerce_tensor(pooled_prompt_embeds, "pooled_prompt_embeds")
+    return prompt_tensor, pooled_tensor
+
+
 @dataclass(frozen=True)
 class BaseModelPreset:
     diffusers_id: str
@@ -1262,31 +1310,7 @@ def train(config: TrainingConfig) -> None:
                         do_classifier_free_guidance=False,
                     )
 
-                    if isinstance(prompt_outputs, tuple):
-                        if len(prompt_outputs) == 2:
-                            prompt_embeds, pooled_prompt_embeds = prompt_outputs
-                        elif len(prompt_outputs) == 3:
-                            prompt_embeds, _, pooled_prompt_embeds = prompt_outputs
-                        elif len(prompt_outputs) >= 4:
-                            prompt_embeds = prompt_outputs[0]
-                            pooled_prompt_embeds = prompt_outputs[2]
-                        else:
-                            raise ValueError(
-                                "encode_prompt devolvió una cantidad inesperada de tensores"
-                            )
-                    elif hasattr(prompt_outputs, "prompt_embeds"):
-                        prompt_embeds = prompt_outputs.prompt_embeds  # type: ignore[assignment]
-                        pooled_prompt_embeds = getattr(
-                            prompt_outputs, "pooled_prompt_embeds", None
-                        )
-                        if pooled_prompt_embeds is None:
-                            raise ValueError(
-                                "encode_prompt no proporcionó 'pooled_prompt_embeds' en el resultado"
-                            )
-                    else:
-                        raise TypeError(
-                            "El método encode_prompt devolvió un tipo inesperado."
-                        )
+                    prompt_embeds, pooled_prompt_embeds = _normalize_prompt_outputs(prompt_outputs)
 
                     add_time_ids = pipe._get_add_time_ids(
                         original_size=(config.resolution, config.resolution),
