@@ -7,22 +7,21 @@ import math
 import os
 import random
 import re
+import shutil
+import subprocess
+import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from diffusers import DDPMScheduler, StableDiffusionXLPipeline
-from diffusers.models.attention_processor import (
-    AttnAddedKVProcessor2_0,
-    AttnProcessor,
-    AttnProcessor2_0,
-    LoRAAttnAddedKVProcessor2_0,
-    LoRAAttnProcessor2_0,
-)
+from diffusers.models import attention_processor as attention_processors
 from diffusers.optimization import (
     get_constant_schedule,
     get_constant_schedule_with_warmup,
@@ -31,13 +30,33 @@ from diffusers.optimization import (
     get_polynomial_decay_schedule_with_warmup,
 )
 from diffusers.utils.import_utils import is_xformers_available
-from diffusers.utils.peft_utils import convert_peft_state_dict_to_diffusers, get_peft_model_state_dict
+try:
+    from diffusers.utils.peft_utils import convert_peft_state_dict_to_diffusers
+except ImportError:  # pragma: no cover - older diffusers versions
+    try:
+        from diffusers.loaders.peft import (
+            convert_peft_state_dict_to_diffusers as _convert_peft_state_dict_to_diffusers,
+        )
+    except Exception:  # pragma: no cover - very old diffusers versions
+
+        def convert_peft_state_dict_to_diffusers(state_dict: Dict[str, torch.Tensor], *args, **kwargs):
+            warnings.warn(
+                "diffusers no dispone de `convert_peft_state_dict_to_diffusers`; se devolverá el estado sin convertir. "
+                "Actualiza diffusers para obtener compatibilidad total.",
+                ImportWarning,
+            )
+            return state_dict
+
+    else:
+
+        def convert_peft_state_dict_to_diffusers(state_dict: Dict[str, torch.Tensor], *args, **kwargs):
+            return _convert_peft_state_dict_to_diffusers(state_dict, *args, **kwargs)
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 try:
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
 except Exception as exc:  # pragma: no cover
     raise RuntimeError(
         "El paquete `peft` es necesario para entrenar LoRAs en los text encoders. "
@@ -45,7 +64,27 @@ except Exception as exc:  # pragma: no cover
     ) from exc
 
 
+AttnProcessor = attention_processors.AttnProcessor
+AttnProcessor2_0 = getattr(attention_processors, "AttnProcessor2_0", AttnProcessor)
+AttnAddedKVProcessor2_0 = getattr(
+    attention_processors,
+    "AttnAddedKVProcessor2_0",
+    attention_processors.AttnAddedKVProcessor,
+)
+LoRAAttnProcessor2_0 = getattr(
+    attention_processors,
+    "LoRAAttnProcessor2_0",
+    attention_processors.LoRAAttnProcessor,
+)
+LoRAAttnAddedKVProcessor2_0 = getattr(
+    attention_processors,
+    "LoRAAttnAddedKVProcessor2_0",
+    attention_processors.LoRAAttnAddedKVProcessor,
+)
+
 LIGHTNING_ROOT = Path("/teamspace/studios/this_studio").resolve()
+MODEL_CACHE_ROOT = (LIGHTNING_ROOT / "model_cache").resolve()
+MODEL_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 LOGGER = get_logger(__name__)
 
 OPTIMIZER_CHOICES = {
@@ -72,17 +111,99 @@ SCHEDULER_CHOICES = {
     "rex",
 }
 
-BASE_MODEL_CHOICES: Dict[str, str] = {
-    "Pony Diffusion V6 XL": "PonyDiffusion/Pony-Diffusion-V6-XL",
-    "Animagine XL V3": "cagliostrolab/animagine-xl-3.0",
-    "animagine_4.0_zero": "cagliostrolab/animagine-xl-4.0-zero",
-    "Illustrious_0.1": "stabilityai/illustrious-xl-0.1",
-    "Illustrious_2.0": "stabilityai/illustrious-xl-2.0",
-    "NoobAI-XL0.75": "NoobAI/NoobAI-XL0.75",
-    "Stable Diffusion XL 1.0 base": "stabilityai/stable-diffusion-xl-base-1.0",
-    "NoobAIXL0_75vpred": "NoobAI/NoobAIXL0.75-vPred",
-    "RouWei_v080vpred": "RouWei/RouWei-v0.80-vPred",
+CROSS_ATTENTION_CHOICES = {"xformers", "sdpa"}
+
+
+@dataclass(frozen=True)
+class BaseModelPreset:
+    diffusers_id: str
+    single_file_url: str
+    single_file_name: str
+    default_vpred: bool = False
+
+
+@dataclass(frozen=True)
+class VaePreset:
+    diffusers_id: str
+    single_file_url: str
+    single_file_name: str
+
+
+BASE_MODEL_PRESETS: Dict[str, BaseModelPreset] = {
+    "Pony Diffusion V6 XL": BaseModelPreset(
+        diffusers_id="WhiteAiZ/Pony_diffusion_v6_diffusers_fp16",
+        single_file_url="https://huggingface.co/WhiteAiZ/PonyXL/resolve/main/PonyDiffusionV6XL.safetensors",
+        single_file_name="PonyDiffusionV6XL.safetensors",
+    ),
+    "Animagine XL V3": BaseModelPreset(
+        diffusers_id="cagliostrolab/animagine-xl-3.0",
+        single_file_url="https://civitai.com/api/download/models/293564",
+        single_file_name="animagineXLV3.safetensors",
+    ),
+    "animagine_4.0_zero": BaseModelPreset(
+        diffusers_id="cagliostrolab/animagine-xl-4.0-zero",
+        single_file_url="https://huggingface.co/cagliostrolab/animagine-xl-4.0-zero/resolve/main/animagine-xl-4.0-zero.safetensors",
+        single_file_name="animagine-xl-4.0-zero.safetensors",
+    ),
+    "Illustrious_0.1": BaseModelPreset(
+        diffusers_id="OnomaAIResearch/Illustrious-xl-early-release-v0",
+        single_file_url="https://huggingface.co/OnomaAIResearch/Illustrious-xl-early-release-v0/resolve/main/Illustrious-XL-v0.1.safetensors",
+        single_file_name="Illustrious-XL-v0.1.safetensors",
+    ),
+    "Illustrious_2.0": BaseModelPreset(
+        diffusers_id="WhiteAiZ/Illustrious_2.0",
+        single_file_url="https://huggingface.co/WhiteAiZ/Illustrious_2.0/resolve/main/illustriousXL20_v20.safetensors",
+        single_file_name="illustriousXL20_v20.safetensors",
+    ),
+    "NoobAI-XL0.75": BaseModelPreset(
+        diffusers_id="Laxhar/noobai-XL-0.75",
+        single_file_url="https://huggingface.co/Laxhar/noobai-XL-0.75/resolve/main/NoobAI-XL-v0.75.safetensors",
+        single_file_name="NoobAI-XL-v0.75.safetensors",
+    ),
+    "NoobAI-XL0.5": BaseModelPreset(
+        diffusers_id="Laxhar/noobai-XL-0.5",
+        single_file_url="https://huggingface.co/Laxhar/noobai-XL-0.5/resolve/main/NoobAI-XL-v0.5.safetensors",
+        single_file_name="NoobAI-XL-v0.5.safetensors",
+    ),
+    "Stable Diffusion XL 1.0 base": BaseModelPreset(
+        diffusers_id="stabilityai/stable-diffusion-xl-base-1.0",
+        single_file_url="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+        single_file_name="sd_xl_base_1.0.safetensors",
+    ),
+    "NoobAIXL0_75vpred": BaseModelPreset(
+        diffusers_id="Laxhar/noobai-XL-Vpred-0.75",
+        single_file_url="https://huggingface.co/Laxhar/noobai-XL-Vpred-0.75/resolve/main/NoobAI-XL-Vpred-v0.75.safetensors",
+        single_file_name="NoobAI-XL-Vpred-v0.75.safetensors",
+        default_vpred=True,
+    ),
+    "RouWei_v080vpred": BaseModelPreset(
+        diffusers_id="John6666/rouwei-v080-vpred-sdxl",
+        single_file_url="https://huggingface.co/WhiteAiZ/RouWei/resolve/main/rouwei_v080Vpred.safetensors",
+        single_file_name="rouwei_v080Vpred.safetensors",
+        default_vpred=True,
+    ),
 }
+
+VAE_PRESETS: Dict[str, VaePreset] = {
+    "Stability AI SDXL VAE": VaePreset(
+        diffusers_id="stabilityai/sdxl-vae",
+        single_file_url="https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors",
+        single_file_name="sdxl_vae.safetensors",
+    ),
+    "Made by Ollin SDXL VAE FP16 Fix": VaePreset(
+        diffusers_id="madebyollin/sdxl-vae-fp16-fix",
+        single_file_url="https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors",
+        single_file_name="sdxl_vae_fp16_fix.safetensors",
+    ),
+    "Turbo VAE XL": VaePreset(
+        diffusers_id="segmind/turbo-sdxl-vae",
+        single_file_url="https://huggingface.co/segmind/turbo-sdxl-vae/resolve/main/diffusion_pytorch_model.safetensors",
+        single_file_name="turbo_sdxl_vae.safetensors",
+    ),
+}
+
+BASE_MODEL_NAMES = tuple(BASE_MODEL_PRESETS.keys())
+VAE_MODEL_NAMES = tuple(VAE_PRESETS.keys())
 
 RECOMMENDED_OPTIMIZER_SETTINGS: Dict[str, Dict[str, object]] = {
     "adafactor": {
@@ -130,6 +251,9 @@ class TrainingConfig:
     seed: Optional[int] = None
     pretrained_model_name_or_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
     base_model: Optional[str] = None
+    load_diffusers_format: bool = True
+    v_prediction: Optional[bool] = None
+    vae_model: Optional[str] = None
     vae_model_name_or_path: Optional[str] = None
     optimizer_type: str = "adamw"
     weight_decay: float = 1e-2
@@ -151,6 +275,7 @@ class TrainingConfig:
     activation_tags: Sequence[str] = field(default_factory=tuple)
     use_optimizer_recommended_args: bool = False
     lora_name: str = "sdxl_lora"
+    cross_attention_backend: str = "xformers"
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
@@ -172,6 +297,10 @@ class TrainingConfig:
             mixed_precision=self.mixed_precision,
             seed=self.seed,
             pretrained_model_name_or_path=self.pretrained_model_name_or_path,
+            base_model=self.base_model,
+            load_diffusers_format=self.load_diffusers_format,
+            v_prediction=self.v_prediction,
+            vae_model=self.vae_model,
             vae_model_name_or_path=self.vae_model_name_or_path,
             optimizer_type=self.optimizer_type,
             weight_decay=self.weight_decay,
@@ -192,22 +321,72 @@ class TrainingConfig:
             shuffle_tags=self.shuffle_tags,
             activation_tags=tuple(self.activation_tags),
             use_optimizer_recommended_args=self.use_optimizer_recommended_args,
-            base_model=self.base_model,
             lora_name=self.lora_name,
+            cross_attention_backend=self.cross_attention_backend,
         )
 
-    def resolved_pretrained_model(self) -> str:
-        base_model_key = (self.base_model or "").strip()
-        if base_model_key:
-            try:
-                return BASE_MODEL_CHOICES[base_model_key]
-            except KeyError as exc:  # pragma: no cover - guard against inconsistent config
-                raise ValueError(f"Modelo base desconocido: {base_model_key}") from exc
+    def resolved_base_target(self) -> Tuple[str, bool, str, Optional[str]]:
+        base_key = (self.base_model or "").strip()
+        candidate = (self.pretrained_model_name_or_path or "").strip()
+
+        preset: Optional[BaseModelPreset] = None
+        display_name = base_key or candidate
+        if base_key:
+            preset = BASE_MODEL_PRESETS.get(base_key)
+            if preset is None:
+                raise ValueError(f"Modelo base desconocido: {base_key}")
+        elif candidate in BASE_MODEL_PRESETS:
+            preset = BASE_MODEL_PRESETS[candidate]
+            display_name = candidate
+
+        if preset:
+            if self.load_diffusers_format:
+                return preset.diffusers_id, True, display_name, None
+            return preset.single_file_url, False, display_name, preset.single_file_name
+
+        if not candidate:
+            raise ValueError("No se proporcionó un identificador de modelo base")
+        return candidate, self.load_diffusers_format, display_name, None
+
+    def resolved_vae_target(self) -> Optional[Tuple[str, bool, str, Optional[str]]]:
+        vae_key = (self.vae_model or "").strip()
+        candidate = (self.vae_model_name_or_path or "").strip()
+        if not vae_key and not candidate:
+            return None
+
+        preset: Optional[VaePreset] = None
+        display_name = vae_key or candidate
+        if vae_key:
+            preset = VAE_PRESETS.get(vae_key)
+            if preset is None:
+                raise ValueError(f"VAE desconocido: {vae_key}")
+        elif candidate in VAE_PRESETS:
+            preset = VAE_PRESETS[candidate]
+            display_name = candidate
+
+        if preset:
+            if self.load_diffusers_format:
+                return preset.diffusers_id, True, display_name, None
+            return preset.single_file_url, False, display_name, preset.single_file_name
+
+        identifier = candidate
+        if not identifier:
+            return None
+        return identifier, self.load_diffusers_format, display_name, None
+
+    def resolved_v_prediction(self) -> bool:
+        if self.v_prediction is not None:
+            return self.v_prediction
+
+        base_key = (self.base_model or "").strip()
+        if base_key and base_key in BASE_MODEL_PRESETS:
+            return BASE_MODEL_PRESETS[base_key].default_vpred
 
         candidate = (self.pretrained_model_name_or_path or "").strip()
-        if candidate in BASE_MODEL_CHOICES:
-            return BASE_MODEL_CHOICES[candidate]
-        return candidate
+        preset = BASE_MODEL_PRESETS.get(candidate)
+        if preset:
+            return preset.default_vpred
+        return False
 
     def resolved_lora_weight_name(self) -> str:
         raw_name = (self.lora_name or "").strip()
@@ -216,6 +395,152 @@ class TrainingConfig:
         if not raw_name.endswith(".safetensors"):
             raw_name = f"{raw_name}.safetensors"
         return raw_name
+
+
+_HF_REPO_ID = re.compile(r"^[\w.-]+/[\w.-]+$")
+_URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _safe_repo_dir(identifier: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", identifier)
+
+
+def _fallback_snapshot(repo_id: str, target_dir: Path, display_name: str) -> Union[str, Path]:
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        LOGGER.warning(
+            "No se pudo descargar %s automáticamente porque huggingface_hub no está disponible. "
+            "Se usará la descarga automática de diffusers.",
+            display_name,
+        )
+        return repo_id
+
+    snapshot_download(repo_id, local_dir=target_dir, local_dir_use_symlinks=False)
+    LOGGER.info("Descarga completada para %s en %s (snapshot_download)", display_name, target_dir)
+    return target_dir
+
+
+def ensure_model_assets(repo_or_path: str, kind: str, display_name: str) -> Union[str, Path]:
+    if not repo_or_path:
+        raise ValueError(f"Identificador de modelo vacío para {display_name}")
+
+    candidate_path = Path(repo_or_path)
+    if candidate_path.exists():
+        return candidate_path
+
+    if not _HF_REPO_ID.match(repo_or_path):
+        LOGGER.info(
+            "Usando ruta directa para %s: %s (no parece un repositorio de Hugging Face)",
+            display_name,
+            repo_or_path,
+        )
+        return repo_or_path
+
+    target_dir = MODEL_CACHE_ROOT / kind / _safe_repo_dir(repo_or_path)
+    if target_dir.exists() and any(target_dir.rglob("*")):
+        return target_dir
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    aria2c_bin = shutil.which("aria2c")
+    if aria2c_bin:
+        try:
+            from huggingface_hub import hf_hub_url, list_repo_files
+
+            files = list_repo_files(repo_or_path)
+            if not files:
+                LOGGER.warning(
+                    "No se encontraron archivos en el repositorio %s; se usará snapshot_download.",
+                    repo_or_path,
+                )
+                return _fallback_snapshot(repo_or_path, target_dir, display_name)
+
+            for file_name in files:
+                if file_name.endswith("/"):
+                    continue
+                destination = target_dir / file_name
+                if destination.exists():
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                url = hf_hub_url(repo_or_path, file_name)
+                cmd = [
+                    aria2c_bin,
+                    "--quiet=true",
+                    "--allow-overwrite=true",
+                    "--auto-file-renaming=false",
+                    "--dir",
+                    str(destination.parent),
+                    "--out",
+                    destination.name,
+                    url,
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"aria2c falló al descargar {file_name}: {result.stderr or result.stdout}"
+                    )
+            LOGGER.info("Descarga completada para %s en %s (aria2c)", display_name, target_dir)
+            return target_dir
+        except Exception as exc:  # pragma: no cover - red de Hugging Face inestable
+            LOGGER.warning(
+                "No se pudo descargar %s con aria2c (%s). Se intentará snapshot_download.",
+                display_name,
+                exc,
+            )
+
+    return _fallback_snapshot(repo_or_path, target_dir, display_name)
+
+
+def ensure_model_file(
+    url_or_path: str, kind: str, display_name: str, expected_name: Optional[str] = None
+) -> Path:
+    candidate_path = Path(url_or_path)
+    if candidate_path.exists():
+        return candidate_path
+
+    if not _URL_PATTERN.match(url_or_path):
+        raise FileNotFoundError(f"No se encontró el archivo {display_name}: {url_or_path}")
+
+    destination_dir = MODEL_CACHE_ROOT / kind
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    parsed = urlparse(url_or_path)
+    filename = expected_name or Path(parsed.path).name
+    if not filename:
+        filename = f"{_safe_repo_dir(display_name)}.safetensors"
+
+    destination = destination_dir / filename
+    if destination.exists():
+        return destination
+
+    aria2c_bin = shutil.which("aria2c")
+    if aria2c_bin:
+        cmd = [
+            aria2c_bin,
+            "--quiet=true",
+            "--allow-overwrite=true",
+            "--auto-file-renaming=false",
+            "--dir",
+            str(destination.parent),
+            "--out",
+            destination.name,
+            url_or_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            LOGGER.info("Descargado %s con aria2c en %s", display_name, destination)
+            return destination
+        LOGGER.warning(
+            "aria2c no pudo descargar %s. Se intentará con urllib. Error: %s",
+            display_name,
+            result.stderr.strip() or result.stdout.strip(),
+        )
+
+    LOGGER.info("Descargando %s mediante urllib", display_name)
+    with urlopen(url_or_path) as response, destination.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+    return destination
 
 
 class FolderCaptionDataset(Dataset):
@@ -599,9 +924,6 @@ def create_lr_scheduler(
 def setup_unet_lora_layers(pipe: StableDiffusionXLPipeline, rank: int, alpha: int) -> List[torch.nn.Parameter]:
     lora_attn_procs = {}
     for name, attn_processor in pipe.unet.attn_processors.items():
-        if not isinstance(attn_processor, (AttnProcessor, AttnProcessor2_0, AttnAddedKVProcessor2_0)):
-            continue
-
         if "mid_block" in name:
             hidden_size = pipe.unet.config.block_out_channels[-1]
         elif "up_blocks" in name:
@@ -636,6 +958,32 @@ def setup_unet_lora_layers(pipe: StableDiffusionXLPipeline, rank: int, alpha: in
     for param in params:
         param.requires_grad_(True)
     return params
+
+
+def apply_cross_attention_backend(pipe: StableDiffusionXLPipeline, backend: str) -> None:
+    backend_key = (backend or "xformers").lower()
+    if backend_key not in CROSS_ATTENTION_CHOICES:
+        raise ValueError(f"Backend de atención cruzada desconocido: {backend}")
+
+    if backend_key == "xformers":
+        if not is_xformers_available():  # pragma: no cover - depende del entorno
+            raise RuntimeError(
+                "Se solicitó xformers como backend de atención cruzada, pero no está instalado. "
+                "Instálalo con `uv pip install xformers` y vuelve a intentarlo."
+            )
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception as exc:  # pragma: no cover - depende de la versión de diffusers
+            raise RuntimeError("No se pudo habilitar la atención eficiente con xformers.") from exc
+        LOGGER.info("Atención cruzada configurada con xformers.")
+        return
+
+    pipe.unet.set_default_attn_processor()
+    try:
+        pipe.enable_attention_slicing()
+    except Exception as exc:  # pragma: no cover - compatibilidad retro
+        LOGGER.warning("No se pudo activar attention slicing al usar SDPA: %s", exc)
+    LOGGER.info("Atención cruzada configurada con SDPA (attention slicing activado).")
 
 
 def setup_text_encoder_lora(model: torch.nn.Module, rank: int, alpha: int) -> torch.nn.Module:
@@ -695,25 +1043,65 @@ def train(config: TrainingConfig) -> None:
         model_dtype = torch.float32
         variant = None
 
-    resolved_model_name = config.resolved_pretrained_model()
+    base_identifier, base_is_diffusers, base_display_name, base_expected_name = config.resolved_base_target()
     LOGGER.info(
-        "Modelo base seleccionado: %s",
-        f"{config.base_model} -> {resolved_model_name}" if config.base_model else resolved_model_name,
+        "Modelo base seleccionado: %s (formato=%s)",
+        base_display_name,
+        "diffusers" if base_is_diffusers else "safetensors",
     )
 
-    pipe = StableDiffusionXLPipeline.from_pretrained(
-        resolved_model_name,
-        torch_dtype=model_dtype,
-        variant=variant,
-    )
+    if base_is_diffusers:
+        base_assets = ensure_model_assets(base_identifier, "base", base_display_name)
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            base_assets,
+            torch_dtype=model_dtype,
+            variant=variant,
+        )
+    else:
+        base_file = ensure_model_file(
+            base_identifier,
+            "base",
+            base_display_name,
+            expected_name=base_expected_name,
+        )
+        pipe = StableDiffusionXLPipeline.from_single_file(
+            base_file,
+            torch_dtype=model_dtype,
+            variant=variant,
+        )
 
-    if config.vae_model_name_or_path:
-        pipe.vae = pipe.vae.from_pretrained(config.vae_model_name_or_path, torch_dtype=model_dtype)
+    resolved_vae = config.resolved_vae_target()
+    if resolved_vae:
+        vae_identifier, vae_is_diffusers, vae_display_name, vae_expected_name = resolved_vae
+        LOGGER.info(
+            "VAE seleccionado: %s (formato=%s)",
+            vae_display_name,
+            "diffusers" if vae_is_diffusers else "safetensors",
+        )
+        if vae_is_diffusers:
+            vae_assets = ensure_model_assets(vae_identifier, "vae", vae_display_name)
+            pipe.vae = pipe.vae.__class__.from_pretrained(vae_assets, torch_dtype=model_dtype)
+        else:
+            vae_file = ensure_model_file(
+                vae_identifier,
+                "vae",
+                vae_display_name,
+                expected_name=vae_expected_name,
+            )
+            from_single_file = getattr(pipe.vae.__class__, "from_single_file", None)
+            if from_single_file is None:
+                raise RuntimeError(
+                    "El VAE seleccionado requiere cargar desde archivo y la clase actual no soporta from_single_file."
+                )
+            pipe.vae = from_single_file(vae_file, torch_dtype=model_dtype)
 
-    pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
+    scheduler_kwargs: Dict[str, Any] = {}
+    if config.resolved_v_prediction():
+        scheduler_kwargs["prediction_type"] = "v_prediction"
+        LOGGER.info("El scheduler utilizará predicción de velocidad (v_prediction=True)")
+    pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config, **scheduler_kwargs)
     pipe.enable_vae_slicing()
-    if is_xformers_available():  # pragma: no cover
-        pipe.enable_xformers_memory_efficient_attention()
+    apply_cross_attention_backend(pipe, config.cross_attention_backend)
 
     unet_params = setup_unet_lora_layers(pipe, config.network_rank, config.network_alpha)
 
@@ -892,12 +1280,50 @@ def parse_args() -> TrainingConfig:
         "--base-model",
         type=str,
         default=None,
-        choices=sorted(BASE_MODEL_CHOICES),
+        choices=sorted(BASE_MODEL_NAMES),
         help=(
             "Nombre del modelo base predefinido a usar. Si se especifica, tiene prioridad sobre --pretrained-model."
         ),
     )
-    parser.add_argument("--vae", type=str, default=None)
+    parser.add_argument(
+        "--diffusers-format",
+        dest="load_diffusers_format",
+        action="store_true",
+        help="Descarga y carga el modelo base en formato Diffusers.",
+    )
+    parser.add_argument(
+        "--safetensors-format",
+        dest="load_diffusers_format",
+        action="store_false",
+        help="Descarga y carga el modelo base como checkpoint .safetensors.",
+    )
+    parser.set_defaults(load_diffusers_format=True)
+    parser.add_argument(
+        "--v-prediction",
+        dest="v_prediction",
+        action="store_true",
+        help="Fuerza el uso de predicción de velocidad (v-prediction) en el scheduler de difusión.",
+    )
+    parser.add_argument(
+        "--no-v-prediction",
+        dest="v_prediction",
+        action="store_false",
+        help="Desactiva explícitamente la predicción de velocidad aunque el preset la sugiera.",
+    )
+    parser.set_defaults(v_prediction=None)
+    parser.add_argument(
+        "--vae-choice",
+        type=str,
+        default=None,
+        choices=sorted(VAE_MODEL_NAMES),
+        help="Nombre del VAE predefinido a usar. Tiene prioridad sobre --vae.",
+    )
+    parser.add_argument(
+        "--vae",
+        type=str,
+        default=None,
+        help="Ruta o identificador del VAE a usar si no seleccionas una opción predefinida.",
+    )
     parser.add_argument("--optimizer", type=str.lower, choices=sorted(OPTIMIZER_CHOICES), default="adamw")
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--optimizer-beta1", type=float, default=0.9)
@@ -934,6 +1360,17 @@ def parse_args() -> TrainingConfig:
         default="sdxl_lora",
         help="Nombre base del archivo .safetensors resultante. Se añadirá la extensión si falta.",
     )
+    parser.add_argument(
+        "--cross-attention",
+        dest="cross_attention_backend",
+        type=str.lower,
+        choices=sorted(CROSS_ATTENTION_CHOICES),
+        default="xformers",
+        help=(
+            "Backend de atención cruzada a usar. 'xformers' requiere tener instalado el paquete homónimo; "
+            "'sdpa' mantiene la atención estándar de PyTorch."
+        ),
+    )
 
     args = parser.parse_args()
     activation_tags = [tag.strip() for tag in re.split(r"[,\n]+", args.activation_tags) if tag.strip()]
@@ -954,6 +1391,9 @@ def parse_args() -> TrainingConfig:
         seed=args.seed,
         pretrained_model_name_or_path=args.pretrained_model,
         base_model=args.base_model,
+        load_diffusers_format=args.load_diffusers_format,
+        v_prediction=args.v_prediction,
+        vae_model=args.vae_choice,
         vae_model_name_or_path=args.vae,
         optimizer_type=args.optimizer,
         weight_decay=args.weight_decay,
@@ -973,6 +1413,7 @@ def parse_args() -> TrainingConfig:
         shuffle_tags=args.shuffle_tags,
         activation_tags=tuple(activation_tags),
         lora_name=args.lora_name,
+        cross_attention_backend=args.cross_attention_backend,
     )
     return config.normalised_paths()
 
