@@ -276,6 +276,7 @@ class TrainingConfig:
     use_optimizer_recommended_args: bool = False
     lora_name: str = "sdxl_lora"
     cross_attention_backend: str = "xformers"
+    cache_latents: bool = False
 
     def normalised_paths(self) -> "TrainingConfig":
         def _resolve(path: Path) -> Path:
@@ -323,6 +324,7 @@ class TrainingConfig:
             use_optimizer_recommended_args=self.use_optimizer_recommended_args,
             lora_name=self.lora_name,
             cross_attention_backend=self.cross_attention_backend,
+            cache_latents=self.cache_latents,
         )
 
     def resolved_base_target(self) -> Tuple[str, bool, str, Optional[str]]:
@@ -559,6 +561,7 @@ class FolderCaptionDataset(Dataset):
         self.shuffle_tags = shuffle_tags
         self.activation_tags = tuple(tag.strip() for tag in (activation_tags or ()) if tag.strip())
         self._activation_lookup = {tag for tag in self.activation_tags}
+        self._latent_cache: Optional[List[Optional[torch.Tensor]]] = None
 
         if not self.dataset_dir.exists():
             raise FileNotFoundError(f"El directorio del dataset no existe: {dataset_dir}")
@@ -600,6 +603,17 @@ class FolderCaptionDataset(Dataset):
         if not self.entries:
             raise ValueError(f"No se encontraron imágenes válidas en {dataset_dir}.")
 
+    def enable_latent_cache(self) -> None:
+        self._latent_cache = [None] * len(self.entries)
+
+    def store_latents(self, indices: Sequence[int], latents: torch.Tensor) -> None:
+        if self._latent_cache is None:
+            raise RuntimeError("La caché de latentes no está inicializada.")
+        if len(indices) != latents.shape[0]:
+            raise ValueError("El número de índices y latentes no coincide.")
+        for position, idx in enumerate(indices):
+            self._latent_cache[idx] = latents[position].detach().cpu()
+
     def __len__(self) -> int:
         return len(self.entries)
 
@@ -619,16 +633,36 @@ class FolderCaptionDataset(Dataset):
         image_path: Path = record["image_path"]  # type: ignore[assignment]
         tags: Sequence[str] = record["tags"]  # type: ignore[assignment]
 
+        prompt = self._build_prompt(tags)
+        sample: Dict[str, object] = {"prompt": prompt, "index": idx}
+
+        cached_latents: Optional[torch.Tensor] = None
+        if self._latent_cache is not None:
+            cached_latents = self._latent_cache[idx]
+
+        if cached_latents is not None:
+            sample["latents"] = cached_latents
+            return sample
+
         image = Image.open(image_path).convert("RGB")
         pixel_values = self.transform(image)
-        prompt = self._build_prompt(tags)
-        return {"pixel_values": pixel_values, "prompt": prompt}
+        sample["pixel_values"] = pixel_values
+        return sample
 
 
 def collate_examples(examples: Iterable[Dict[str, object]]) -> Dict[str, object]:
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
-    prompts = [example["prompt"] for example in examples]
-    return {"pixel_values": pixel_values, "prompts": prompts}
+    batch: Dict[str, object] = {
+        "prompts": [example["prompt"] for example in examples],
+        "indices": [example["index"] for example in examples],
+    }
+
+    if all("pixel_values" in example for example in examples):
+        batch["pixel_values"] = torch.stack([example["pixel_values"] for example in examples])
+
+    if all("latents" in example for example in examples):
+        batch["latents"] = torch.stack([example["latents"] for example in examples])
+
+    return batch
 
 
 def calculate_total_steps(num_images: int, num_repeats: int, num_epochs: int, batch_size: int) -> int:
@@ -1140,6 +1174,37 @@ def train(config: TrainingConfig) -> None:
     else:
         weight_dtype = torch.float32
 
+    if config.cache_latents:
+        LOGGER.info("Caché de latentes activada: precalculando latentes del dataset.")
+        dataset.enable_latent_cache()
+        cache_loader = DataLoader(
+            dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            collate_fn=collate_examples,
+            num_workers=min(8, os.cpu_count() or 1),
+        )
+        cache_batches = math.ceil(len(dataset) / config.batch_size)
+        vae_was_training = pipe.vae.training
+        pipe.vae.eval()
+        with torch.no_grad():
+            for cache_step, batch in enumerate(cache_loader, start=1):
+                pixel_values = batch["pixel_values"].to(
+                    accelerator.device, dtype=pipe.vae.dtype
+                )
+                latents = pipe.vae.encode(pixel_values).latent_dist.sample()
+                latents = latents * 0.18215
+                latents = latents.to(weight_dtype)
+                dataset.store_latents(batch["indices"], latents)
+                if cache_step % 10 == 0 or cache_step == cache_batches:
+                    LOGGER.info(
+                        "Latentes precalculados: %d/%d lotes", cache_step, cache_batches
+                    )
+        if vae_was_training:
+            pipe.vae.train()
+        LOGGER.info("Precálculo de latentes completado para %d ejemplos.", len(dataset))
+        del cache_loader
+
     if config.seed is not None:
         torch.manual_seed(config.seed)
 
@@ -1167,19 +1232,27 @@ def train(config: TrainingConfig) -> None:
         for repeat in range(config.num_repeats):
             for step, batch in enumerate(dataloader):
                 with accelerator.accumulate(unet):
-                    pixel_values = batch["pixel_values"].to(accelerator.device, dtype=weight_dtype)
-                    noise = torch.randn_like(pixel_values)
+                    cached_latents = batch.get("latents") if isinstance(batch, dict) else None
+
+                    if cached_latents is not None:
+                        latents = cached_latents.to(accelerator.device, dtype=weight_dtype)
+                    else:
+                        pixel_values = batch["pixel_values"].to(
+                            accelerator.device, dtype=pipe.vae.dtype
+                        )
+                        latents = pipe.vae.encode(pixel_values).latent_dist.sample()
+                        latents = latents * 0.18215
+                        latents = latents.to(weight_dtype)
+
+                    noise = torch.randn_like(latents)
                     timesteps = torch.randint(
                         0,
                         pipe.scheduler.config.num_train_timesteps,
-                        (pixel_values.shape[0],),
+                        (latents.shape[0],),
                         device=accelerator.device,
                         dtype=torch.long,
                     )
 
-                    latents = pipe.vae.encode(pixel_values).latent_dist.sample()
-                    latents = latents * 0.18215
-                    noise = noise.to(latents.dtype)
                     noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
 
                     prompt_embeds, pooled_prompt_embeds = pipe.encode_prompt(
@@ -1196,7 +1269,7 @@ def train(config: TrainingConfig) -> None:
                         dtype=prompt_embeds.dtype,
                     )
                     add_time_ids = add_time_ids.to(accelerator.device)
-                    add_time_ids = add_time_ids.repeat(pixel_values.shape[0], 1)
+                    add_time_ids = add_time_ids.repeat(latents.shape[0], 1)
 
                     model_pred = unet(
                         noisy_latents,
@@ -1301,6 +1374,19 @@ def parse_args() -> TrainingConfig:
             "(útil para GPUs con memoria limitada como la T4), 'bf16' emplea bfloat16 y 'no' mantiene fp32."
         ),
     )
+    parser.add_argument(
+        "--cache-latents",
+        dest="cache_latents",
+        action="store_true",
+        help="Precacula y reutiliza los latentes del dataset para ahorrar cómputo en la VAE.",
+    )
+    parser.add_argument(
+        "--no-cache-latents",
+        dest="cache_latents",
+        action="store_false",
+        help="Desactiva el precálculo de latentes incluso si estuviera activado previamente.",
+    )
+    parser.set_defaults(cache_latents=False)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--pretrained-model", type=str, default="stabilityai/stable-diffusion-xl-base-1.0")
     parser.add_argument(
@@ -1448,6 +1534,7 @@ def parse_args() -> TrainingConfig:
         activation_tags=tuple(activation_tags),
         lora_name=args.lora_name,
         cross_attention_backend=args.cross_attention_backend,
+        cache_latents=args.cache_latents,
     )
     return config.normalised_paths()
 
