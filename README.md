@@ -1,4 +1,4 @@
-**🌟 XL LoRA Trainer (Lightning.ai)**
+<h1>🌟 XL LoRA Trainer (Lightning.ai)</h1>
 
 Este notebook adapta el flujo de trabajo del proyecto original de [hollowstrawberry](https://colab.research.google.com/github/hollowstrawberry/kohy2-colab/blob/main/Lora_Trainer_XL.ipynb) y el fork de [whitez](https://colab.research.google.com/github/whitez/Lora-Trainer-XL/blob/main/Fix_Lora_Trainer_XL.ipynb) usando [Kohya](https://github.com/kohya-ss/sd-scripts) para ejecutarse dentro de Lightning.ai.
 
