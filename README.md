@@ -3,4 +3,3 @@ Este notebook adapta el flujo de trabajo del proyecto original de [hollowstrawbe
 Si se les hace compicado entender todo este notebook, comienzen primero haciendo loras en colab para familiarizarse con este notebook.<br>
 Recomendable solo usar la grafica L4, ya que es suficiente para todo.<br>
 > Basado en el trabajo de [Kohya-ss](https://github.com/kohya-ss/sd-scripts), [Linaqruf](https://github.com/Linaqruf/kohya-trainer)
-[Google](https://www.google.com)
