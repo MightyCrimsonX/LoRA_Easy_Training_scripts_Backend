@@ -180,7 +180,7 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
     )
     lr_scheduler_widget = widgets.Dropdown(
         options=lr_scheduler_options,
-        value=namespace.get("lr_scheduler", "constant_with_warmup"),
+        value=namespace.get("lr_scheduler", "cosine"),
         description="lr_scheduler",
         style=base_style,
     )
@@ -191,13 +191,13 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
         style=base_style,
     )
     network_dim_widget = widgets.IntText(
-        value=int(namespace.get("network_dim", 16)),
+        value=int(namespace.get("network_dim", 32)),
         description="network_dim",
         style=base_style,
         layout=number_layout,
     )
     network_alpha_widget = widgets.IntText(
-        value=int(namespace.get("network_alpha", 32)),
+        value=int(namespace.get("network_alpha", 16)),
         description="network_alpha",
         style=base_style,
         layout=number_layout,
@@ -222,7 +222,7 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
     )
     precision_widget = widgets.Dropdown(
         options=precision_options,
-        value=_resolve_precision(namespace.get("precision", "fp16"), precision_options),
+        value=_resolve_precision(namespace.get("precision", "bf16"), precision_options),
         description="precision",
         style=base_style,
     )
