@@ -225,11 +225,11 @@ lr_warmup_ratio = 0.05 #@param {type:"slider", min:0.0, max:0.2, step:0.01}
 lr_warmup_steps = 100 #@param {type:"number"}
 #@markdown Estas configuraciones pueden producir mejores resultados.`min_snr_gamma` ajusta la pérdida con el tiempo. `ip_noise_gamma` ajusta el ruido aleatorio.
 min_snr_gamma_enabled = True #@param {type:"boolean"}
-min_snr_gamma = 8.0 #@param {type:"slider", min:4, max:16.0, step:0.5}
-ip_noise_gamma_enabled = True #@param {type:"boolean"}
-ip_noise_gamma = 0.05 #@param {type:"slider", min:0.05, max:0.1, step:0.01}
+min_snr_gamma = 5.0 #@param {type:"slider", min:4, max:16.0, step:0.5}
+ip_noise_gamma_enabled = False #@param {type:"boolean"}
+ip_noise_gamma = 0 #@param {type:"slider", min:0.05, max:0.1, step:0.01}
 #@markdown Multinoise puede ayudar con el equilibrio del color (negros más oscuros, blancos más claros) no es necesario activarlo si entrenas Lora Vpred.
-multinoise = False #@param {type:"boolean"}
+multinoise = True #@param {type:"boolean"}
 
 #@markdown ### ▶️ Structure
 #@markdown LoRA es del tipo clásico y bueno para una variedad de propósitos. LoCon es bueno con los estilos artísticos (también funciona con personajes) ya que tiene más capas para aprender más aspectos del conjunto de datos.
@@ -245,7 +245,7 @@ lora_type = globals().get("lora_type", lora_type_param)
 #@markdown | Style LoCon | 16 | 8 | 16 | 8 |
 
 #@markdown Más dim significa un Lora más grande, puede contener más información, pero más no siempre es mejor.
-network_dim_param = 16 #@param {type:"number", min:1, max:32, step:1}
+network_dim_param = 32 #@param {type:"number", min:1, max:32, step:1}
 network_dim = globals().get("network_dim", network_dim_param)
 network_alpha_param = 32 #@param {type:"number", min:1, max:32, step:1}
 network_alpha = globals().get("network_alpha", network_alpha_param)
@@ -316,6 +316,7 @@ if recommended_values:
     unet_lr = 1.0
     text_encoder_lr = 1.0
     full_precision = False
+    network_alpha = network_dim
   if optimizer == "Prodigy":
     optimizer_args = ["decouple=True", "weight_decay=0.01", "betas=[0.9,0.999]", "d_coef=1", "use_bias_correction=True", "safeguard_warmup=True"]
   elif optimizer == "AdamW8bit":
@@ -539,7 +540,7 @@ def create_config():
         "lr_scheduler_args": lr_scheduler_args,
         "lr_scheduler_num_cycles": lr_scheduler_num_cycles if lr_scheduler == "cosine_with_restarts" else None,
         "lr_scheduler_power": lr_scheduler_power if lr_scheduler == "polynomial" else None,
-        "lr_warmup_steps": lr_warmup_steps if lr_scheduler not in ("cosine", "constant") else None,
+        "lr_warmup_steps": lr_warmup_steps if lr_scheduler != "constant" else None,
         "optimizer_type": optimizer,
        "optimizer_args": optimizer_args or None,
         "loss_type": "l2",
