@@ -405,7 +405,7 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
         else:
             expanded_path = Path(os.path.expanduser(url_or_path))
             if not expanded_path.is_absolute():
-                expanded_path = Path(namespace.get("root_dir", "/teamspace/studios/this_studio")) / expanded_path
+                expanded_path = Path(namespace.get("root_dir", "/root")) / expanded_path
 
             if not expanded_path.exists():
                 custom_model_status.value = f"<b>Error:</b> la ruta {expanded_path} no existe."
