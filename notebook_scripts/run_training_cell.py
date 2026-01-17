@@ -37,10 +37,10 @@ def _run_cmd(command: str) -> None:
         subprocess.run(command, shell=True, check=True)
 
 
-root_dir = "/teamspace/studios/this_studio"
+root_dir = "/root"
 trainer_dir = os.path.join(root_dir, "LoRA_Easy_Training_scripts_Backend")
 kohya_dir = os.path.join(trainer_dir, "sd-scripts")
-models_dir = "/teamspace/studios/this_studio/models"
+models_dir = "/root/models"
 downloads_dir = os.path.join(root_dir, "downloads")
 custom_optimizer_path = os.path.join(trainer_dir, "custom_scheduler")
 if custom_optimizer_path not in sys.path:
@@ -83,7 +83,7 @@ project_name_param = " " #@param {type:"string"}
 project_name = globals().get("project_name", project_name_param).strip()
 #@markdown La estructura de carpetas no importa y es puramente por comodidad. Asegúrate de elegir siempre el mismo.  Me gusta organizar por proyecto.
 folder_structure = "Organize by project (lora_projects/project_name/dataset)" #@param ["Organize by category (lora_training/datasets/project_name)", "Organize by project (lora_projects/project_name/dataset)"]
-#@markdown Decida el modelo que se descargará y utilizará para el entrenamiento. También puedes elegir tu propio modelo pegando su enlace de descarga o proporcionando una ruta dentro de `/teamspace/studios/this_studio`.
+#@markdown Decida el modelo que se descargará y utilizará para el entrenamiento. También puedes elegir tu propio modelo pegando su enlace de descarga o proporcionando una ruta dentro de `/root`.
 training_model_param = "Illustrious_2.0" # @param ["Pony Diffusion V6 XL","Animagine XL V3","animagine_4.0_zero","Illustrious_0.1","Illustrious_2.0","NoobAI-XL0.75","NoobAI-XL0.5","Stable Diffusion XL 1.0 base","NoobAIXL0_75vpred","RouWei_v080vpred"]
 training_model = globals().get("training_model", training_model_param)
 optional_custom_training_model_param = "" #@param {type:"string"}
