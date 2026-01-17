@@ -20,8 +20,8 @@ from IPython.display import Markdown, display
 from pathlib import Path
 
 
-PROJECTS_ROOT = Path("/teamspace/studios/this_studio/lora_projects")
-MODELS_ROOT = Path("/teamspace/studios/this_studio/models")
+PROJECTS_ROOT = Path("/root/lora_projects")
+MODELS_ROOT = Path("/root/models")
 
 
 @dataclass(frozen=True)
