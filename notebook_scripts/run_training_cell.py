@@ -11,7 +11,7 @@ import time
 from IPython.display import Markdown, display, HTML, clear_output
 from huggingface_hub.utils import disable_progress_bars
 import logging
-
+import sys
 from IPython import get_ipython
 import subprocess
 
@@ -363,7 +363,7 @@ def lightning_rel(path):
     return path
 
 
-venv_python = "/home/zeus/miniconda3/envs/cloudspace/bin/python3"
+venv_python = sys.executable
 #venv_pip = os.path.join(kohya_dir, "venv/bin/pip")
 train_network = os.path.join(kohya_dir, "sdxl_train_network.py")
 
