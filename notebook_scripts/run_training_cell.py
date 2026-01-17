@@ -402,8 +402,8 @@ def install_trainer():
 
   os.chdir(trainer_dir)
   display(HTML("<h2 style='color: yellow;'>Descargando dependencias</h2>"))
-  _run_cmd("chmod 755 /teamspace/studios/this_studio/LoRA_Easy_Training_scripts_Backend/colab_install.sh")
-  _run_cmd("/teamspace/studios/this_studio/LoRA_Easy_Training_scripts_Backend/colab_install.sh > install_log.txt 2>&1")
+  _run_cmd("chmod 755 /root/LoRA_Easy_Training_scripts_Backend/colab_install.sh")
+  _run_cmd("/root/LoRA_Easy_Training_scripts_Backend/colab_install.sh > install_log.txt 2>&1")
 
   os.chdir(kohya_dir)
   if LOAD_TRUNCATED_IMAGES:
