@@ -318,7 +318,7 @@ if recommended_values:
     full_precision = False
     network_alpha = network_dim
   if optimizer == "Prodigy":
-    optimizer_args = ["decouple=True", "weight_decay=0.01", "betas=[0.9,0.999]", "d_coef=2", "use_bias_correction=True", "safeguard_warmup=True"]
+    optimizer_args = ["decouple=True", "weight_decay=0.01", "betas=[0.9,0.999]", "d_coef=1", "use_bias_correction=True", "safeguard_warmup=True"]
   elif optimizer == "AdamW8bit":
     optimizer_args = ["weight_decay=0.1", "betas=[0.9,0.99]"]
   elif optimizer == "AdaFactor":
