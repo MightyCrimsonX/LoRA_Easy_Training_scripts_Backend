@@ -562,7 +562,7 @@ def create_config():
         "no_half_vae": True,
         "gradient_checkpointing": True,
         "gradient_accumulation_steps": gradient_accumulation_steps,
-        "max_data_loader_n_workers": 1,
+        "max_data_loader_n_workers": 6,
         "persistent_data_loader_workers": True,
         "mixed_precision": mixed_precision,
         "full_fp16": mixed_precision == "fp16" and full_precision,
