@@ -648,7 +648,7 @@ def download_model():
     print(f"🌐 Descargando VAE en {target} ...")
     try:
       _run_cmd(
-        f"aria2c '{vae_url}' --console-log-level=warn -c -s 16 -x 16 -k 10M -d {target.parent} -o '{target.name}'"
+        f"aria2c '{vae_url}' --console-log-level=error -c -x 16 -s 16 -k 1M -d {target.parent} -o '{target.name}'"
       )
     except Exception as exc:
       print(f"💥 Error al descargar el VAE: {exc}")
