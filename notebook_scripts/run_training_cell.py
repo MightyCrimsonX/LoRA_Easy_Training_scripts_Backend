@@ -236,14 +236,6 @@ multinoise = True #@param {type:"boolean"}
 lora_type_param = "LoRA" # @param ["LoRA","LoCon"]
 lora_type = globals().get("lora_type", lora_type_param)
 
-#@markdown A continuación se muestran algunos valores XL recomendados para las siguientes configuraciones:
-
-#@markdown | type | network_dim | network_alpha | conv_dim | conv_alpha |
-#@markdown | :---: | :---: | :---: | :---: | :---: |
-#@markdown | Personaje LoRA | 4 | 16 |   |   |
-#@markdown | Regular y Estilo LoRA | 8 | 4 |   |   |
-#@markdown | Style LoCon | 16 | 8 | 16 | 8 |
-
 #@markdown Más dim significa un Lora más grande, puede contener más información, pero más no siempre es mejor.
 network_dim_param = 32 #@param {type:"number", min:1, max:32, step:1}
 network_dim = globals().get("network_dim", network_dim_param)
@@ -283,7 +275,7 @@ precision_param = "fp16" #@param ["float", "full fp16", "full bf16", "mixed fp16
 precision = globals().get("precision", precision_param)
 #@markdown El almacenamiento en caché latente en disco agregará un archivo de 250 KB junto a cada imagen, pero usará considerablemente menos memoria.
 cache_latents = True #@param {type:"boolean"}
-cache_latents_to_disk = False #@param {type:"boolean"}
+cache_latents_to_disk = True #@param {type:"boolean"}
 #@markdown La siguiente opción desactivará shuffle_tags y deshabilitará el entrenamiento del codificador de texto.
 cache_text_encoder_outputs  = False  # @param {type:"boolean"}
 
@@ -385,13 +377,13 @@ dataset_config_file = os.path.join(config_folder, "dataset_config.toml")
 
 def install_trainer():
   global installed
-  libtcmalloc_path = os.path.join(root_dir, "libtcmalloc_minimal.so.4")
+  libmimalloc_path = os.path.join(root_dir, "libmimalloc.so.2.1")
 
   if 'installed' not in globals():
     installed = False
 
-  if not os.path.exists(libtcmalloc_path):
-    _run_cmd(f"wget -q -c --show-progress https://github.com/camenduru/gperftools/releases/download/v1.0/libtcmalloc_minimal.so.4 -O {libtcmalloc_path}")
+  if not os.path.exists(libmimalloc_path):
+    _run_cmd(f"wget -q -c --show-progress https://huggingface.co/datasets/Mightys/Notebook_Scripts/resolve/main/libmimalloc.so.2.1 -O {libmimalloc_path}")
 
   if not os.path.exists(trainer_dir):
     _run_cmd(f"git clone -b dev https://github.com/gwhitez/LoRA_Easy_Training_scripts_Backend.git {trainer_dir}")
@@ -434,7 +426,7 @@ def install_trainer():
     _run_cmd("sed -i 's/accelerator.log(logs, step=epoch + 1)//g' train_network.py")
     _run_cmd("sed -i 's/accelerator.log(logs, step=epoch + 1)//g' sdxl_train.py")
 
-  os.environ["LD_PRELOAD"] = libtcmalloc_path
+  os.environ["LD_PRELOAD"] = libmimalloc_path
   os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
   os.environ["BITSANDBYTES_NOWELCOME"] = "1"
   os.environ["SAFETENSORS_FAST_GPU"] = "1"
