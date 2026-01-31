@@ -157,13 +157,13 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
         layout=number_layout,
     )
     num_repeats_widget = widgets.IntText(
-        value=int(namespace.get("num_repeats", 2)),
+        value=int(namespace.get("num_repeats", 4)),
         description="num_repeats",
         style=base_style,
         layout=number_layout,
     )
     how_many_widget = widgets.IntText(
-        value=int(namespace.get("how_many", 40)),
+        value=int(namespace.get("how_many", 55)),
         description="how_many",
         style=base_style,
         layout=number_layout,
@@ -197,7 +197,7 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
         layout=number_layout,
     )
     network_alpha_widget = widgets.IntText(
-        value=int(namespace.get("network_alpha", 16)),
+        value=int(namespace.get("network_alpha", 32)),
         description="network_alpha",
         style=base_style,
         layout=number_layout,
@@ -215,7 +215,7 @@ def render_quick_training_config(namespace: Dict[str, Any]) -> None:
         layout=widgets.Layout(width="100%"),
     )
     train_batch_size_widget = widgets.IntText(
-        value=int(namespace.get("train_batch_size", 8)),
+        value=int(namespace.get("train_batch_size", 12)),
         description="train_batch_size",
         style=base_style,
         layout=number_layout,
