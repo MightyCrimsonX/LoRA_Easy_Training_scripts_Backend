@@ -267,7 +267,7 @@ if lora_type.lower() == "locon":
 train_batch_size_param = 8 #@param {type:"slider", min:1, max:16, step:1}
 train_batch_size = globals().get("train_batch_size", train_batch_size_param)
 #@markdown xformers funciona mejor que sdpa con los nuevos scrips.
-cross_attention = "xformers" #@param ["sdpa", "xformers"]
+cross_attention = "sdpa" #@param ["sdpa", "xformers"]
 #@markdown Utilice `full fp16` para el uso mínimo de memoria. <p>
 #@markdown `float, full bf16, full fp16, mixed bf16 y mixed fp16` solo funcionaran con colab pro. <p>
 #@markdown El Lora se entrenará con la precisión seleccionada, pero siempre se guardará en formato fp16 por razones de compatibilidad.
