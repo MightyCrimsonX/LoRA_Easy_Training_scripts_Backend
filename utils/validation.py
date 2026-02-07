@@ -50,9 +50,7 @@ def validate_args(args: dict) -> tuple[bool, list[str], dict]:
             if arg == "network_args":
                 vals = []
                 for k, v in val.items():
-                    if k == "algo":
-                        output_args["network_module"] = "lycoris.kohya"
-                    elif k == "unit":
+                    if k == "unit":
                         output_args["network_module"] = "networks.dylora"
                     if k in [
                         "down_lr_weight",
