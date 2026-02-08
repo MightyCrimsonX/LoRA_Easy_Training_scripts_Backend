@@ -4,5 +4,3 @@
 [submodule "LyCORIS"]
 	path = lycoris
 	url = https://github.com/67372a/LyCORIS
-
-	url = https://github.com/duongve13112002/sd-scripts
