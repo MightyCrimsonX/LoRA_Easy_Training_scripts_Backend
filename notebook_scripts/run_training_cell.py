@@ -827,7 +827,7 @@ def main():
   print("⭐ Iniciando Entrenador..")
 
   os.chdir(kohya_dir)
-  _run_cmd(f"{venv_python} {train_network} --config_file={config_file} --dataset_config={dataset_config_file}")
+  _run_cmd(f"{venv_python} {train_network} --console_log_simple --config_file={config_file} --dataset_config={dataset_config_file}")
   os.chdir(root_dir)
 
   if not get_ipython().__dict__.get('user_ns', {}).get('_exit_code', False):
