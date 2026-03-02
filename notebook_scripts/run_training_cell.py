@@ -226,8 +226,8 @@ lr_warmup_steps = 100 #@param {type:"number"}
 #@markdown Estas configuraciones pueden producir mejores resultados.`min_snr_gamma` ajusta la pérdida con el tiempo. `ip_noise_gamma` ajusta el ruido aleatorio.
 min_snr_gamma_enabled = True #@param {type:"boolean"}
 min_snr_gamma = 5.0 #@param {type:"slider", min:4, max:16.0, step:0.5}
-ip_noise_gamma_enabled = False #@param {type:"boolean"}
-ip_noise_gamma = 0 #@param {type:"slider", min:0.05, max:0.1, step:0.01}
+ip_noise_gamma_enabled = True #@param {type:"boolean"}
+ip_noise_gamma = 0.05 #@param {type:"slider", min:0.05, max:0.1, step:0.01}
 #@markdown Multinoise puede ayudar con el equilibrio del color (negros más oscuros, blancos más claros) no es necesario activarlo si entrenas Lora Vpred.
 multinoise = True #@param {type:"boolean"}
 
@@ -532,7 +532,7 @@ def create_config():
         "lr_scheduler_args": lr_scheduler_args,
         "lr_scheduler_num_cycles": lr_scheduler_num_cycles if lr_scheduler == "cosine_with_restarts" else None,
         "lr_scheduler_power": lr_scheduler_power if lr_scheduler == "polynomial" else None,
-        "lr_warmup_steps": lr_warmup_steps if lr_scheduler != "constant" else None,
+        "lr_warmup_steps": lr_warmup_steps if lr_scheduler not in ("cosine", "constant") else None,
         "optimizer_type": optimizer,
        "optimizer_args": optimizer_args or None,
         "loss_type": "l2",
