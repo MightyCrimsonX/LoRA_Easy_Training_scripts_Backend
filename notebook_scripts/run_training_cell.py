@@ -170,9 +170,9 @@ else:
   model_file = os.path.join(models_dir, "rouwei_v080Vpred.safetensors")
 
 if load_diffusers:
-  vae_file= "stabilityai/sdxl-vae"
+  vae_file= "madebyollin/sdxl-vae-fp16-fix"
 else:
-  vae_url = "https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors"
+  vae_url = "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors"
   vae_file = os.path.join(models_dir, "sdxl_vae.safetensors")
 
 model_url = model_url.strip()
@@ -551,7 +551,7 @@ def create_config():
         "sdpa": cross_attention == "sdpa",
         "min_snr_gamma": min_snr_gamma if min_snr_gamma_enabled else None,
         "ip_noise_gamma": ip_noise_gamma if ip_noise_gamma_enabled else None,
-        "no_half_vae": True,
+        "no_half_vae": False,
         "gradient_checkpointing": True,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "max_data_loader_n_workers": 10,
