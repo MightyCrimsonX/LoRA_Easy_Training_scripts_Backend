@@ -306,7 +306,7 @@ optimizer_args = [a.strip() for a in optimizer_args.split(' ') if a]
 if recommended_values:
   if any(opt in optimizer.lower() for opt in ["dadapt", "prodigy"]):
     unet_lr = 1.0
-    text_encoder_lr = 1.0
+    text_encoder_lr = 0
     full_precision = False
     network_alpha = network_dim
   if optimizer == "Prodigy":
