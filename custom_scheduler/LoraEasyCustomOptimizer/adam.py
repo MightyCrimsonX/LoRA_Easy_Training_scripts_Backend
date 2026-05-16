@@ -102,7 +102,7 @@ def _stochastic_round_bf16(fp32_tensor, out_bf16):
 
 
 class AdamW8bitKahan(bitsandbytes.optim.AdamW8bit):
-    def __init__(self, *args, stabilize=True, **kwargs):
+    def __init__(self, *args, stabilize=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.stabilize = stabilize
 
@@ -160,7 +160,7 @@ class AdamW8bitKahan(bitsandbytes.optim.AdamW8bit):
                 config["betas"][1],
                 config["betas"][2] if len(config["betas"]) >= 3 else 0.0,
                 config["alpha"],
-                0.0,
+                config["weight_decay"],
                 gnorm_scale,
                 state["unorm_vec"] if config["max_unorm"] > 0.0 else None,
                 max_unorm=config["max_unorm"],
@@ -185,7 +185,7 @@ class AdamW8bitKahan(bitsandbytes.optim.AdamW8bit):
                 state["max2"],
                 state["new_max1"],
                 state["new_max2"],
-                0.0,
+                config["weight_decay"],
                 gnorm_scale=gnorm_scale,
                 unorm_vec=state["unorm_vec"] if config["max_unorm"] > 0.0 else None,
                 max_unorm=config["max_unorm"],
@@ -212,28 +212,10 @@ class AdamW8bitKahan(bitsandbytes.optim.AdamW8bit):
                 state["qmap2"],
                 state["absmax1"],
                 state["absmax2"],
-                0.0,
+                config["weight_decay"],
                 gnorm_scale=gnorm_scale,
                 skip_zeros=config["skip_zeros"],
             )
-
-        # --- Decoupled weight decay applied manually via shift buffer ---
-        # bitsandbytes optimizer_update_* would apply weight decay to `shift`
-        # (the Kahan compensation term, near zero) instead of `p` (the actual
-        # weight).  We pass weight_decay=0.0 to the kernel and apply it here,
-        # AFTER the kernel, so the kernel's nearest rounding can't overwrite
-        # our stochastic rounding.
-        wd = config["weight_decay"]
-        if wd > 0.0:
-            # shift -= lr * wd * p   (decoupled weight decay targeting true weight)
-            # Computed in fp32 to avoid sub-ULP loss, then stochastically rounded
-            # back to bf16 so the expected value is preserved across steps.
-            wd_update = p.data.float().mul_(lr * wd)
-            shift_fp32 = shift.float().sub_(wd_update)
-            if shift.dtype == torch.bfloat16:
-                _stochastic_round_bf16(shift_fp32, shift)
-            else:
-                shift.copy_(shift_fp32)
 
         buffer = p.clone()
         p.add_(shift)
