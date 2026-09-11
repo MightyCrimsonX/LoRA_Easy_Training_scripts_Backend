@@ -71,6 +71,7 @@ from LoraEasyCustomOptimizer.ainoopt import AINOOpt
 from LoraEasyCustomOptimizer.warpadam import WarpAdam
 from LoraEasyCustomOptimizer.warpaino import WarpAINO
 from LoraEasyCustomOptimizer.simplified_ademamix_aino import SimplifiedAdEMAMixAINO
+from LoraEasyCustomOptimizer.RelAdamW import RelAdamW
 
 OPTIMIZER_LIST: List[OPTIMIZER] = [
     ABMOG,
@@ -145,6 +146,7 @@ OPTIMIZER_LIST: List[OPTIMIZER] = [
     Prodigy_adv,
     ProjectiveAdam,
     RACS,
+    RelAdamW,
     REMASTER,
     RMSProp,
     RMSPropADOPT,
