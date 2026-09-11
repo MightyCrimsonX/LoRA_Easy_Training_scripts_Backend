@@ -100,7 +100,7 @@ class RelAdamW(Optimizer):
         params: parameters to optimize.
         lr: relative learning rate (default: 1e-2).
         betas: (beta1 momentum, beta2 variance) (default: (0.95, 0.999)).
-        eps: numerical stability constant (default: 1e-8).
+        eps: numerical stability constant (default: 1e-12).
         weight_decay: relative WD coefficient (default: 0.1). Per-parameter
             scaling is supported: an explicit ``p.weight_decay_ratio``
             attribute scales the effective WD (``weight_decay * ratio``);
@@ -127,7 +127,7 @@ class RelAdamW(Optimizer):
         params: Iterable[torch.Tensor],
         lr: float = 1e-2,
         betas=(0.95, 0.999),
-        eps: float = 1e-8,
+        eps: float = 1e-12,
         weight_decay: float = 0.1,
         sinkhorn_iter: int = 3,
         shape_mode: str = "multi_axis",
