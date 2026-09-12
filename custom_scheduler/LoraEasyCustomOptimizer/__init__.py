@@ -50,7 +50,7 @@ from LoraEasyCustomOptimizer.fftdescent import FFTDescent
 from LoraEasyCustomOptimizer.scgopt import SCGOpt
 from LoraEasyCustomOptimizer.singstate import SingState
 from LoraEasyCustomOptimizer.snoo_asgd import SNOO_ASGD
-from adv_optm.optim import AdamW_adv, Adopt_adv, Simplified_AdEMAMix as Simplified_AdEMAMix_adv, Lion_adv
+from adv_optm.optim import AdamW_adv, Adopt_adv, Lion_adv, Prodigy_adv, Muon_adv, AdaMuon_adv, SignSGD_adv, SinkSGD_adv
 from LoraEasyCustomOptimizer.abmog import ABMOG
 from LoraEasyCustomOptimizer.bcos import BCOS
 from LoraEasyCustomOptimizer.projective_adam import ProjectiveAdam
@@ -58,10 +58,26 @@ from LoraEasyCustomOptimizer.wiwiopt import WiwiOpt
 from LoraEasyCustomOptimizer.adam import AdamW8bitKahan
 from LoraEasyCustomOptimizer.cascade import CASCADE
 from LoraEasyCustomOptimizer.radam_schedulefree import RAdamScheduleFree
+from LoraEasyCustomOptimizer.nor_muon_schedulefree import NorMuonScheduleFree
+from LoraEasyCustomOptimizer.ocgoptv2 import OCGOptV2
+from LoraEasyCustomOptimizer.adamw_schedulefree_plus import AdamWScheduleFreePlus
+from LoraEasyCustomOptimizer.amuse import AMUSE
+from LoraEasyCustomOptimizer.soda import SODA
+from LoraEasyCustomOptimizer.moda import MODA
+from LoraEasyCustomOptimizer.soda_wrapper import SODAWrapper
+from LoraEasyCustomOptimizer.bilatmuon import BilatMuon
+from LoraEasyCustomOptimizer.bilatmuonns import BilatMuonNS
+from LoraEasyCustomOptimizer.ainoopt import AINOOpt
+from LoraEasyCustomOptimizer.warpadam import WarpAdam
+from LoraEasyCustomOptimizer.warpaino import WarpAINO
+from LoraEasyCustomOptimizer.simplified_ademamix_aino import SimplifiedAdEMAMixAINO
+from LoraEasyCustomOptimizer.RelAdamW import RelAdamW
 
 OPTIMIZER_LIST: List[OPTIMIZER] = [
     ABMOG,
     AdamW8bitKahan,
+    AdamWScheduleFreePlus,
+    AMUSE,
     ADOPT,
     ADOPTAOScheduleFree,
     ADOPTEMAMixScheduleFree,
@@ -72,14 +88,18 @@ OPTIMIZER_LIST: List[OPTIMIZER] = [
     AdaBelief,
     AdaGC,
     AdamMini,
+    AdaMuon_adv,
     Adan,
     AdamW_adv,
     AdamW4bitAO,
     AdamW8bitAO,
     AdamWfp8AO,
     Adopt_adv,
+    AINOOpt,
     Alice,
     BCOS,
+    BilatMuon,
+    BilatMuonNS,
     CAME,
     CASCADE,
     Compass,
@@ -114,13 +134,19 @@ OPTIMIZER_LIST: List[OPTIMIZER] = [
     LPFAdamW,
     LaProp,
     Lion_adv,
+    MODA,
     MomentusCaution,
+    Muon_adv,
     Mythical,
+    NorMuonScheduleFree,
     OAGOpt,
     OCGOpt,
+    OCGOptV2,
     ProdigyPlusScheduleFree,
+    Prodigy_adv,
     ProjectiveAdam,
     RACS,
+    RelAdamW,
     REMASTER,
     RMSProp,
     RMSPropADOPT,
@@ -134,13 +160,19 @@ OPTIMIZER_LIST: List[OPTIMIZER] = [
     ScheduleFreeWrapper,
     SCORN,
     SCORNMachina,
-    Simplified_AdEMAMix_adv,
     SimplifiedAdEMAMix,
     SimplifiedAdEMAMixExM,
+    SignSGD_adv,
+    SinkSGD_adv,
     SingState,
     SNOO_ASGD,
+    SODA,
+    SODAWrapper,
     StableSPAM,
     TALON,
+    WarpAdam,
+    WarpAINO,
+    SimplifiedAdEMAMixAINO,
     VSGD,
     WiwiOpt,
 ]
