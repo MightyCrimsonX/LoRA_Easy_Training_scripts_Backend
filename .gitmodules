@@ -1,4 +1,4 @@
 [submodule "sd_scripts"]
 	path = sd_scripts
-	url = https://github.com/67372a/sd-scripts
+	url = https://github.com/MightyCrimsonX/sd-scripts
 	branch = main
